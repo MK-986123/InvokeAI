@@ -38,6 +38,7 @@
         "deletedImagesCannotBeRestored": "Deleted images cannot be restored.",
         "hideBoards": "Hide Boards",
         "loading": "Loading...",
+        "locateInGalery": "Locate in Gallery",
         "menuItemAutoAdd": "Auto-add to this Board",
         "move": "Move",
         "movingImagesToBoard_one": "Moving {{count}} image to board:",
@@ -114,6 +115,9 @@
         "t2iAdapter": "T2I Adapter",
         "positivePrompt": "Positive Prompt",
         "negativePrompt": "Negative Prompt",
+        "removeNegativePrompt": "Remove Negative Prompt",
+        "addNegativePrompt": "Add Negative Prompt",
+        "selectYourModel": "Select Your Model",
         "discordLabel": "Discord",
         "dontAskMeAgain": "Don't ask me again",
         "dontShowMeThese": "Don't show me these",
@@ -610,6 +614,10 @@
                 "title": "Toggle Non-Raster Layers",
                 "desc": "Show or hide all non-raster layer categories (Control Layers, Inpaint Masks, Regional Guidance)."
             },
+            "fitBboxToLayers": {
+                "title": "Fit Bbox To Layers",
+                "desc": "Automatically adjust the generation bounding box to fit visible layers"
+            },
             "fitBboxToMasks": {
                 "title": "Fit Bbox To Masks",
                 "desc": "Automatically adjust the generation bounding box to fit visible inpaint masks"
@@ -763,6 +771,7 @@
         "allPrompts": "All Prompts",
         "cfgScale": "CFG scale",
         "cfgRescaleMultiplier": "$t(parameters.cfgRescaleMultiplier)",
+        "clipSkip": "$t(parameters.clipSkip)",
         "createdBy": "Created By",
         "generationMode": "Generation Mode",
         "guidance": "Guidance",
@@ -865,6 +874,9 @@
         "install": "Install",
         "installAll": "Install All",
         "installRepo": "Install Repo",
+        "installBundle": "Install Bundle",
+        "installBundleMsg1": "Are you sure you want to install the {{bundleName}} bundle?",
+        "installBundleMsg2": "This bundle will install the following {{count}} models:",
         "ipAdapters": "IP Adapters",
         "learnMoreAboutSupportedModels": "Learn more about the models we support",
         "load": "Load",
@@ -1235,7 +1247,7 @@
             "modelIncompatibleScaledBboxWidth": "Scaled bbox width is {{width}} but {{model}} requires multiple of {{multiple}}",
             "modelIncompatibleScaledBboxHeight": "Scaled bbox height is {{height}} but {{model}} requires multiple of {{multiple}}",
             "fluxModelMultipleControlLoRAs": "Can only use 1 Control LoRA at a time",
-            "fluxKontextMultipleReferenceImages": "Can only use 1 Reference Image at a time with Flux Kontext",
+            "fluxKontextMultipleReferenceImages": "Can only use 1 Reference Image at a time with FLUX Kontext via BFL API",
             "canvasIsFiltering": "Canvas is busy (filtering)",
             "canvasIsTransforming": "Canvas is busy (transforming)",
             "canvasIsRasterizing": "Canvas is busy (rasterizing)",
@@ -1283,6 +1295,7 @@
         "remixImage": "Remix Image",
         "usePrompt": "Use Prompt",
         "useSeed": "Use Seed",
+        "useClipSkip": "Use CLIP Skip",
         "width": "Width",
         "gaussianBlur": "Gaussian Blur",
         "boxBlur": "Box Blur",
@@ -1935,6 +1948,8 @@
             "addToForm": "Add to Form",
             "label": "Label",
             "showDescription": "Show Description",
+            "showShuffle": "Show Shuffle",
+            "shuffle": "Shuffle",
             "component": "Component",
             "numberInput": "Number Input",
             "singleLine": "Single Line",
@@ -2066,6 +2081,8 @@
         "asControlLayer": "As $t(controlLayers.controlLayer)",
         "asControlLayerResize": "As $t(controlLayers.controlLayer) (Resize)",
         "referenceImage": "Reference Image",
+        "maxRefImages": "Max Ref Images",
+        "useAsReferenceImage": "Use as Reference Image",
         "regionalReferenceImage": "Regional Reference Image",
         "globalReferenceImage": "Global Reference Image",
         "sendingToCanvas": "Staging Generations on Canvas",
@@ -2174,7 +2191,8 @@
             "rgReferenceImagesNotSupported": "regional Reference Images not supported for selected base model",
             "rgAutoNegativeNotSupported": "Auto-Negative not supported for selected base model",
             "rgNoRegion": "no region drawn",
-            "fluxFillIncompatibleWithControlLoRA": "Control LoRA is not compatible with FLUX Fill"
+            "fluxFillIncompatibleWithControlLoRA": "Control LoRA is not compatible with FLUX Fill",
+            "bboxHidden": "Bounding box is hidden (shift+o to toggle)"
         },
         "errors": {
             "unableToFindImage": "Unable to find image",
@@ -2533,7 +2551,7 @@
     },
     "ui": {
         "tabs": {
-            "generation": "Generation",
+            "generate": "Generate",
             "canvas": "Canvas",
             "workflows": "Workflows",
             "workflowsTab": "$t(ui.tabs.workflows) $t(common.tab)",
@@ -2544,6 +2562,12 @@
             "upscalingTab": "$t(ui.tabs.upscaling) $t(common.tab)",
             "gallery": "Gallery"
         },
+        "panels": {
+            "launchpad": "Launchpad",
+            "workflowEditor": "Workflow Editor",
+            "imageViewer": "Image Viewer",
+            "canvas": "Canvas"
+        },
         "launchpad": {
             "workflowsTitle": "Go deep with Workflows.",
             "upscalingTitle": "Upscale and add detail.",
@@ -2551,6 +2575,28 @@
             "generateTitle": "Generate images from text prompts.",
             "modelGuideText": "Want to learn what prompts work best for each model?",
             "modelGuideLink": "Check out our Model Guide.",
+            "createNewWorkflowFromScratch": "Create a new Workflow from scratch",
+            "browseAndLoadWorkflows": "Browse and load existing workflows",
+            "addStyleRef": {
+                "title": "Add a Style Reference",
+                "description": "Add an image to transfer its look."
+            },
+            "editImage": {
+                "title": "Edit Image",
+                "description": "Add an image to refine."
+            },
+            "generateFromText": {
+                "title": "Generate from Text",
+                "description": "Enter a prompt and Invoke."
+            },
+            "useALayoutImage": {
+                "title": "Use a Layout Image",
+                "description": "Add an image to control composition."
+            },
+            "generate": {
+                "canvasCalloutTitle": "Looking to get more control, edit, and iterate on your images?",
+                "canvasCalloutLink": "Navigate to Canvas for more capabilities."
+            },
             "workflows": {
                 "description": "Workflows are reusable templates that automate image generation tasks, allowing you to quickly perform complex operations and get consistent results.",
                 "learnMoreLink": "Learn more about creating workflows",
@@ -2587,6 +2633,13 @@
                 "upscaleModel": "Upscale Model",
                 "model": "Model",
                 "scale": "Scale",
+                "creativityAndStructure": {
+                    "title": "Creativity & Structure Defaults",
+                    "conservative": "Conservative",
+                    "balanced": "Balanced",
+                    "creative": "Creative",
+                    "artistic": "Artistic"
+                },
                 "helpText": {
                     "promptAdvice": "When upscaling, use a prompt that describes the medium and style. Avoid describing specific content details in the image.",
                     "styleAdvice": "Upscaling works best with the general style of your image."
@@ -2631,10 +2684,8 @@
     "whatsNew": {
         "whatsNewInInvoke": "What's New in Invoke",
         "items": [
-            "New setting to send all Canvas generations directly to the Gallery.",
-            "New Invert Mask (Shift+V) and Fit BBox to Mask (Shift+B) capabilities.",
-            "Expanded support for Model Thumbnails and configurations.",
-            "Various other quality of life updates and fixes"
+            "Misc QoL: Toggle Bbox visibility, highlight nodes with errors, prevent adding node fields to Builder form multiple times, CLIP Skip metadata recallable",
+            "Reduced VRAM usage for multiple Kontext Ref images and VAE encoding"
         ],
         "readReleaseNotes": "Read Release Notes",
         "watchRecentReleaseVideos": "Watch Recent Release Videos",

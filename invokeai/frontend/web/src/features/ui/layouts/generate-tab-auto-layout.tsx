@@ -2,19 +2,20 @@ import type { DockviewApi, GridviewApi, IDockviewReactProps, IGridviewReactProps
 import { DockviewReact, GridviewReact, LayoutPriority, Orientation } from 'dockview';
 import { BoardsPanel } from 'features/gallery/components/BoardsListPanelContent';
 import { GalleryPanel } from 'features/gallery/components/Gallery';
-import { GenerationProgressPanel } from 'features/gallery/components/ImageViewer/GenerationProgressPanel';
 import { ImageViewerPanel } from 'features/gallery/components/ImageViewer/ImageViewerPanel';
 import { FloatingLeftPanelButtons } from 'features/ui/components/FloatingLeftPanelButtons';
 import { FloatingRightPanelButtons } from 'features/ui/components/FloatingRightPanelButtons';
 import type {
   AutoLayoutDockviewComponents,
   AutoLayoutGridviewComponents,
-  PanelParameters,
+  DockviewPanelParameters,
+  GridviewPanelParameters,
   RootLayoutGridviewComponents,
 } from 'features/ui/layouts/auto-layout-context';
 import { AutoLayoutProvider, useAutoLayoutContext, withPanelContainer } from 'features/ui/layouts/auto-layout-context';
 import type { TabName } from 'features/ui/store/uiTypes';
 import { dockviewTheme } from 'features/ui/styles/theme';
+import { t } from 'i18next';
 import { memo, useCallback, useEffect } from 'react';
 
 import { DockviewTab } from './DockviewTab';
@@ -38,7 +39,6 @@ import {
   LEFT_PANEL_ID,
   LEFT_PANEL_MIN_SIZE_PX,
   MAIN_PANEL_ID,
-  PROGRESS_PANEL_ID,
   RIGHT_PANEL_ID,
   RIGHT_PANEL_MIN_SIZE_PX,
   SETTINGS_PANEL_ID,
@@ -54,30 +54,31 @@ const tabComponents = {
 const mainPanelComponents: AutoLayoutDockviewComponents = {
   [LAUNCHPAD_PANEL_ID]: withPanelContainer(GenerateLaunchpadPanel),
   [VIEWER_PANEL_ID]: withPanelContainer(ImageViewerPanel),
-  [PROGRESS_PANEL_ID]: withPanelContainer(GenerationProgressPanel),
 };
 
 const initializeMainPanelLayout = (tab: TabName, api: DockviewApi) => {
   navigationApi.registerContainer(tab, 'main', api, () => {
-    const launchpad = api.addPanel<PanelParameters>({
+    const launchpad = api.addPanel<DockviewPanelParameters>({
       id: LAUNCHPAD_PANEL_ID,
       component: LAUNCHPAD_PANEL_ID,
-      title: 'Launchpad',
+      title: t('ui.panels.launchpad'),
       tabComponent: DOCKVIEW_TAB_LAUNCHPAD_ID,
       params: {
         tab,
         focusRegion: 'launchpad',
+        i18nKey: 'ui.panels.launchpad',
       },
     });
 
-    api.addPanel<PanelParameters>({
+    api.addPanel<DockviewPanelParameters>({
       id: VIEWER_PANEL_ID,
       component: VIEWER_PANEL_ID,
-      title: 'Image Viewer',
+      title: t('ui.panels.imageViewer'),
       tabComponent: DOCKVIEW_TAB_PROGRESS_ID,
       params: {
         tab,
         focusRegion: 'viewer',
+        i18nKey: 'ui.panels.imageViewer',
       },
       position: {
         direction: 'within',
@@ -125,7 +126,7 @@ const rightPanelComponents: AutoLayoutGridviewComponents = {
 
 const initializeRightPanelLayout = (tab: TabName, api: GridviewApi) => {
   navigationApi.registerContainer(tab, 'right', api, () => {
-    const gallery = api.addPanel<PanelParameters>({
+    const gallery = api.addPanel<GridviewPanelParameters>({
       id: GALLERY_PANEL_ID,
       component: GALLERY_PANEL_ID,
       minimumWidth: RIGHT_PANEL_MIN_SIZE_PX,
@@ -136,7 +137,7 @@ const initializeRightPanelLayout = (tab: TabName, api: GridviewApi) => {
       },
     });
 
-    const boards = api.addPanel<PanelParameters>({
+    const boards = api.addPanel<GridviewPanelParameters>({
       id: BOARDS_PANEL_ID,
       component: BOARDS_PANEL_ID,
       minimumHeight: BOARD_PANEL_MIN_HEIGHT_PX,
@@ -181,7 +182,7 @@ const leftPanelComponents: AutoLayoutGridviewComponents = {
 
 const initializeLeftPanelLayout = (tab: TabName, api: GridviewApi) => {
   navigationApi.registerContainer(tab, 'left', api, () => {
-    api.addPanel<PanelParameters>({
+    api.addPanel<GridviewPanelParameters>({
       id: SETTINGS_PANEL_ID,
       component: SETTINGS_PANEL_ID,
       params: {
@@ -220,13 +221,13 @@ const rootPanelComponents: RootLayoutGridviewComponents = {
 
 const initializeRootPanelLayout = (tab: TabName, api: GridviewApi) => {
   navigationApi.registerContainer(tab, 'root', api, () => {
-    const main = api.addPanel<PanelParameters>({
+    const main = api.addPanel<GridviewPanelParameters>({
       id: MAIN_PANEL_ID,
       component: MAIN_PANEL_ID,
       priority: LayoutPriority.High,
     });
 
-    const left = api.addPanel<PanelParameters>({
+    const left = api.addPanel<GridviewPanelParameters>({
       id: LEFT_PANEL_ID,
       component: LEFT_PANEL_ID,
       minimumWidth: LEFT_PANEL_MIN_SIZE_PX,
@@ -236,7 +237,7 @@ const initializeRootPanelLayout = (tab: TabName, api: GridviewApi) => {
       },
     });
 
-    const right = api.addPanel<PanelParameters>({
+    const right = api.addPanel<GridviewPanelParameters>({
       id: RIGHT_PANEL_ID,
       component: RIGHT_PANEL_ID,
       minimumWidth: RIGHT_PANEL_MIN_SIZE_PX,

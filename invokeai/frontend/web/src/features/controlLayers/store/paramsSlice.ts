@@ -107,14 +107,7 @@ const slice = createSlice({
         return;
       }
 
-      // Clamp CLIP skip layer count to the bounds of the new model
-      if (model.base === 'sdxl') {
-        // We don't support user-defined CLIP skip for SDXL because it doesn't do anything useful
-        state.clipSkip = 0;
-      } else {
-        const { maxClip } = CLIP_SKIP_MAP[model.base];
-        state.clipSkip = clamp(state.clipSkip, 0, maxClip);
-      }
+      applyClipSkip(state, model, state.clipSkip);
     },
     vaeSelected: (state, action: PayloadAction<ParameterVAEModel | null>) => {
       // null is a valid VAE!
@@ -170,7 +163,7 @@ const slice = createSlice({
       state.vaePrecision = action.payload;
     },
     setClipSkip: (state, action: PayloadAction<number>) => {
-      state.clipSkip = action.payload;
+      applyClipSkip(state, state.model, action.payload);
     },
     shouldUseCpuNoiseChanged: (state, action: PayloadAction<boolean>) => {
       state.shouldUseCpuNoise = action.payload;
@@ -180,15 +173,6 @@ const slice = createSlice({
     },
     negativePromptChanged: (state, action: PayloadAction<ParameterNegativePrompt>) => {
       state.negativePrompt = action.payload;
-    },
-    positivePrompt2Changed: (state, action: PayloadAction<string>) => {
-      state.positivePrompt2 = action.payload;
-    },
-    negativePrompt2Changed: (state, action: PayloadAction<string>) => {
-      state.negativePrompt2 = action.payload;
-    },
-    shouldConcatPromptsChanged: (state, action: PayloadAction<boolean>) => {
-      state.shouldConcatPrompts = action.payload;
     },
     refinerModelChanged: (state, action: PayloadAction<ParameterSDXLRefinerModel | null>) => {
       const result = zParamsState.shape.refinerModel.safeParse(action.payload);
@@ -241,6 +225,15 @@ const slice = createSlice({
     },
 
     //#region Dimensions
+    sizeRecalled: (state, action: PayloadAction<{ width: number; height: number }>) => {
+      const { width, height } = action.payload;
+      const gridSize = getGridSize(state.model?.base);
+      state.dimensions.rect.width = Math.max(roundDownToMultiple(width, gridSize), 64);
+      state.dimensions.rect.height = Math.max(roundDownToMultiple(height, gridSize), 64);
+      state.dimensions.aspectRatio.value = state.dimensions.rect.width / state.dimensions.rect.height;
+      state.dimensions.aspectRatio.id = 'Free';
+      state.dimensions.aspectRatio.isLocked = true;
+    },
     widthChanged: (state, action: PayloadAction<{ width: number; updateAspectRatio?: boolean; clamp?: boolean }>) => {
       const { width, updateAspectRatio, clamp } = action.payload;
       const gridSize = getGridSize(state.model?.base);
@@ -366,17 +359,46 @@ const slice = createSlice({
   },
 });
 
+const applyClipSkip = (state: { clipSkip: number }, model: ParameterModel | null, clipSkip: number) => {
+  if (model === null) {
+    return;
+  }
+
+  const maxClip = getModelMaxClipSkip(model);
+
+  state.clipSkip = clamp(clipSkip, 0, maxClip);
+};
+
+const hasModelClipSkip = (model: ParameterModel | null) => {
+  if (model === null) {
+    return false;
+  }
+
+  return getModelMaxClipSkip(model) > 0;
+};
+
+const getModelMaxClipSkip = (model: ParameterModel) => {
+  if (model.base === 'sdxl') {
+    // We don't support user-defined CLIP skip for SDXL because it doesn't do anything useful
+    return 0;
+  }
+
+  return CLIP_SKIP_MAP[model.base].maxClip;
+};
+
 const resetState = (state: ParamsState): ParamsState => {
   // When a new session is requested, we need to keep the current model selections, plus dependent state
   // like VAE precision. Everything else gets reset to default.
+  const oldState = deepClone(state);
   const newState = getInitialParamsState();
-  newState.model = state.model;
-  newState.vae = state.vae;
-  newState.fluxVAE = state.fluxVAE;
-  newState.vaePrecision = state.vaePrecision;
-  newState.t5EncoderModel = state.t5EncoderModel;
-  newState.clipEmbedModel = state.clipEmbedModel;
-  newState.refinerModel = state.refinerModel;
+  newState.dimensions = oldState.dimensions;
+  newState.model = oldState.model;
+  newState.vae = oldState.vae;
+  newState.fluxVAE = oldState.fluxVAE;
+  newState.vaePrecision = oldState.vaePrecision;
+  newState.t5EncoderModel = oldState.t5EncoderModel;
+  newState.clipEmbedModel = oldState.clipEmbedModel;
+  newState.refinerModel = oldState.refinerModel;
   return newState;
 };
 
@@ -414,9 +436,6 @@ export const {
   shouldUseCpuNoiseChanged,
   positivePromptChanged,
   negativePromptChanged,
-  positivePrompt2Changed,
-  negativePrompt2Changed,
-  shouldConcatPromptsChanged,
   refinerModelChanged,
   setRefinerSteps,
   setRefinerCFGScale,
@@ -427,6 +446,7 @@ export const {
   modelChanged,
 
   // Dimensions
+  sizeRecalled,
   widthChanged,
   heightChanged,
   aspectRatioLockToggled,
@@ -448,8 +468,7 @@ export const paramsSliceConfig: SliceConfig<typeof slice> = {
 };
 
 export const selectParamsSlice = (state: RootState) => state.params;
-export const createParamsSelector = <T>(selector: Selector<ParamsState, T>) =>
-  createSelector(selectParamsSlice, selector);
+const createParamsSelector = <T>(selector: Selector<ParamsState, T>) => createSelector(selectParamsSlice, selector);
 
 export const selectBase = createParamsSelector((params) => params.model?.base);
 export const selectIsSDXL = createParamsSelector((params) => params.model?.base === 'sdxl');
@@ -485,7 +504,8 @@ export const selectCFGScale = createParamsSelector((params) => params.cfgScale);
 export const selectGuidance = createParamsSelector((params) => params.guidance);
 export const selectSteps = createParamsSelector((params) => params.steps);
 export const selectCFGRescaleMultiplier = createParamsSelector((params) => params.cfgRescaleMultiplier);
-export const selectCLIPSKip = createParamsSelector((params) => params.clipSkip);
+export const selectCLIPSkip = createParamsSelector((params) => params.clipSkip);
+export const selectHasModelCLIPSkip = createParamsSelector((params) => hasModelClipSkip(params.model));
 export const selectCanvasCoherenceEdgeSize = createParamsSelector((params) => params.canvasCoherenceEdgeSize);
 export const selectCanvasCoherenceMinDenoise = createParamsSelector((params) => params.canvasCoherenceMinDenoise);
 export const selectCanvasCoherenceMode = createParamsSelector((params) => params.canvasCoherenceMode);
@@ -506,9 +526,6 @@ export const selectModelSupportsNegativePrompt = createSelector(
   [selectIsFLUX, selectIsChatGPT4o, selectIsFluxKontext],
   (isFLUX, isChatGPT4o, isFluxKontext) => !isFLUX && !isChatGPT4o && !isFluxKontext
 );
-export const selectPositivePrompt2 = createParamsSelector((params) => params.positivePrompt2);
-export const selectNegativePrompt2 = createParamsSelector((params) => params.negativePrompt2);
-export const selectShouldConcatPrompts = createParamsSelector((params) => params.shouldConcatPrompts);
 export const selectScheduler = createParamsSelector((params) => params.scheduler);
 export const selectSeamlessXAxis = createParamsSelector((params) => params.seamlessXAxis);
 export const selectSeamlessYAxis = createParamsSelector((params) => params.seamlessYAxis);

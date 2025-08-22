@@ -1,11 +1,14 @@
 import { useAppSelector, useAppStore } from 'app/store/storeHooks';
 import { MetadataHandlers, MetadataUtils } from 'features/metadata/parsing';
 import { selectActiveTab } from 'features/ui/store/uiSelectors';
+import type { TabName } from 'features/ui/store/uiTypes';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDebouncedMetadata } from 'services/api/hooks/useDebouncedMetadata';
 import type { ImageDTO } from 'services/api/types';
 
 import { useClearStylePresetWithToast } from './useClearStylePresetWithToast';
+
+const ALLOWED_TABS: TabName[] = ['canvas', 'generate', 'upscaling'];
 
 export const useRecallPrompts = (imageDTO: ImageDTO) => {
   const store = useAppStore();
@@ -19,12 +22,7 @@ export const useRecallPrompts = (imageDTO: ImageDTO) => {
     const parse = async () => {
       try {
         const result = await MetadataUtils.hasMetadataByHandlers({
-          handlers: [
-            MetadataHandlers.PositivePrompt,
-            MetadataHandlers.NegativePrompt,
-            MetadataHandlers.PositiveStylePrompt,
-            MetadataHandlers.NegativeStylePrompt,
-          ],
+          handlers: [MetadataHandlers.PositivePrompt, MetadataHandlers.NegativePrompt],
           metadata,
           store,
           require: 'some',
@@ -43,7 +41,7 @@ export const useRecallPrompts = (imageDTO: ImageDTO) => {
       return false;
     }
 
-    if (tab !== 'canvas' && tab !== 'generate') {
+    if (!ALLOWED_TABS.includes(tab)) {
       return false;
     }
 

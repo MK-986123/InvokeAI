@@ -115,7 +115,7 @@ export const buildMultidiffusionUpscaleGraph = async (state: RootState): Promise
       type: 'sdxl_compel_prompt',
       id: getPrefixedId('neg_cond'),
       prompt: prompts.negative,
-      style: prompts.negativeStyle,
+      style: prompts.negative,
     });
     modelLoader = g.addNode({
       type: 'sdxl_model_loader',
@@ -130,21 +130,14 @@ export const buildMultidiffusionUpscaleGraph = async (state: RootState): Promise
     g.addEdge(modelLoader, 'unet', tiledMultidiffusion, 'unet');
 
     g.addEdge(positivePrompt, 'value', posCond, 'prompt');
+    g.addEdge(positivePrompt, 'value', posCond, 'style');
 
     addSDXLLoRAs(state, g, tiledMultidiffusion, modelLoader, null, posCond, negCond);
 
     g.upsertMetadata({
       negative_prompt: prompts.negative,
-      negative_style_prompt: prompts.negativeStyle,
     });
-
-    if (prompts.useMainPromptsForStyle) {
-      g.addEdge(positivePrompt, 'value', posCond, 'style');
-      g.addEdgeToMetadata(positivePrompt, 'value', 'positive_style_prompt');
-    } else {
-      posCond.style = prompts.positiveStyle;
-      g.upsertMetadata({ positive_style_prompt: prompts.positiveStyle });
-    }
+    g.addEdgeToMetadata(positivePrompt, 'value', 'positive_prompt');
   } else {
     const prompts = selectPresetModifiedPrompts(state);
 
@@ -179,6 +172,8 @@ export const buildMultidiffusionUpscaleGraph = async (state: RootState): Promise
     g.upsertMetadata({
       negative_prompt: prompts.negative,
     });
+
+    g.addEdgeToMetadata(positivePrompt, 'value', 'positive_prompt');
   }
 
   const modelConfig = await fetchModelConfigWithTypeGuard(model.key, isNonRefinerMainModelConfig);

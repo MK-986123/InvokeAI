@@ -1,6 +1,5 @@
 import { deepClone } from 'common/util/deepClone';
 import type { CanvasEntityAdapter } from 'features/controlLayers/konva/CanvasEntity/types';
-import type { ProgressImage } from 'features/nodes/types/common';
 import { zMainModelBase, zModelIdentifierField } from 'features/nodes/types/common';
 import {
   zParameterCanvasCoherenceMode,
@@ -15,9 +14,7 @@ import {
   zParameterMaskBlurMethod,
   zParameterModel,
   zParameterNegativePrompt,
-  zParameterNegativeStylePromptSDXL,
   zParameterPositivePrompt,
-  zParameterPositiveStylePromptSDXL,
   zParameterPrecision,
   zParameterScheduler,
   zParameterSDXLRefinerModel,
@@ -414,8 +411,6 @@ export const zLoRA = z.object({
 });
 export type LoRA = z.infer<typeof zLoRA>;
 
-export type EphemeralProgressImage = { sessionId: string; image: ProgressImage };
-
 export const zAspectRatioID = z.enum(['Free', '21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16', '9:21']);
 export type AspectRatioID = z.infer<typeof zAspectRatioID>;
 export const isAspectRatioID = (v: unknown): v is AspectRatioID => zAspectRatioID.safeParse(v).success;
@@ -537,9 +532,6 @@ export const zParamsState = z.object({
   shouldUseCpuNoise: z.boolean(),
   positivePrompt: zParameterPositivePrompt,
   negativePrompt: zParameterNegativePrompt,
-  positivePrompt2: zParameterPositiveStylePromptSDXL,
-  negativePrompt2: zParameterNegativeStylePromptSDXL,
-  shouldConcatPrompts: z.boolean(),
   refinerModel: zParameterSDXLRefinerModel.nullable(),
   refinerSteps: z.number(),
   refinerCFGScale: z.number(),
@@ -587,9 +579,6 @@ export const getInitialParamsState = (): ParamsState => ({
   shouldUseCpuNoise: true,
   positivePrompt: '',
   negativePrompt: null,
-  positivePrompt2: '',
-  negativePrompt2: '',
-  shouldConcatPrompts: true,
   refinerModel: null,
   refinerSteps: 20,
   refinerCFGScale: 7.5,
