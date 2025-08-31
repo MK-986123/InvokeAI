@@ -147,8 +147,6 @@ export const FLUX_SCHEDULER_OPTIONS: ComboboxOption[] = [
   { value: 'flow_heun', label: 'FlowMatch Heun' },
 ] as const;
 
-export type FluxScheduler = (typeof FLUX_SCHEDULER_OPTIONS)[number]['value'];
-
 /**
  * List of base models that make API requests
  */
