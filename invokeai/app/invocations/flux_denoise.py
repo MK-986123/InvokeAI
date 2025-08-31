@@ -37,7 +37,7 @@ from invokeai.backend.flux.extensions.kontext_extension import KontextExtension
 from invokeai.backend.flux.extensions.regional_prompting_extension import RegionalPromptingExtension
 from invokeai.backend.flux.extensions.xlabs_controlnet_extension import XLabsControlNetExtension
 from invokeai.backend.flux.extensions.xlabs_ip_adapter_extension import XLabsIPAdapterExtension
-from invokeai.backend.flux.flux_schedulers import FLUX_SCHEDULER_NAME
+from invokeai.backend.flux.flux_schedulers import FLUX_SCHEDULER_MAP, FLUX_SCHEDULER_NAME, FLUX_SCHEDULER_PARAMS
 from invokeai.backend.flux.ip_adapter.xlabs_ip_adapter_flux import XlabsIpAdapterFlux
 from invokeai.backend.flux.model import Flux
 from invokeai.backend.flux.sampling_utils import (
@@ -159,9 +159,9 @@ class FluxDenoiseInvocation(BaseInvocation):
         description="FLUX Kontext conditioning (reference image).",
         input=Input.Connection,
     )
-    scheduler: FLUX_SCHEDULER_NAME = InputField(
-        default="flow_euler",
-        description="Flow-matching scheduler to use (Euler, Euler/Karras, Euler/Exp or Heun).",
+    scheduler: Optional[FLUX_SCHEDULER_NAME] = InputField(
+        default=None,
+        description="Flow-matching scheduler for FLUX (Euler/Heun variants). If unset, use built-in schedule.",
     )
 
     @torch.no_grad()
@@ -239,19 +239,26 @@ class FluxDenoiseInvocation(BaseInvocation):
         transformer_config = context.models.get_config(self.transformer.transformer)
         is_schnell = "schnell" in getattr(transformer_config, "config_path", "")
 
-        # Calculate the timestep schedule using the selected scheduler.
-        from invokeai.backend.flux.flux_schedulers import FLUX_SCHEDULER_MAP, FLUX_SCHEDULER_PARAMS
-        
-        # Build scheduler instance
-        scheduler_cls = FLUX_SCHEDULER_MAP[self.scheduler]
-        scheduler = scheduler_cls(num_train_timesteps=1000, **FLUX_SCHEDULER_PARAMS[self.scheduler])
-        
-        # Prepare timesteps using diffusers scheduler
-        import torch
-        scheduler.set_timesteps(num_inference_steps=self.num_steps, device=torch.device("cpu"))
-        
-        # Convert scheduler.timesteps (PyTorch tensor) into a list of floats in [0,1] format:
-        timesteps = (scheduler.timesteps.float().cpu() / 1000.0).tolist()
+        # compute timesteps
+        if self.scheduler is not None:
+            # use diffusers flow-matching scheduler
+            scheduler_cls = FLUX_SCHEDULER_MAP[self.scheduler]
+            sched_kwargs = FLUX_SCHEDULER_PARAMS[self.scheduler].copy()
+            # allow dynamic shift based on resolution, like internal get_schedule
+            # (diffusers FlowMatchEulerDiscreteScheduler exposes base/max shifting)
+            sched = scheduler_cls(**sched_kwargs)
+            sched.set_timesteps(num_inference_steps=self.num_steps, device=TorchDevice.choose_torch_device())
+            # turn tensor -> python list[float], descending [1..0]
+            timesteps = (sched.timesteps.float().cpu() / 1000.0).tolist()
+        else:
+            # fallback: preserve current behaviour
+            timesteps = get_schedule(
+                num_steps=self.num_steps,
+                image_seq_len=(packed_height * packed_width),
+                base_shift=0.5,
+                max_shift=1.15,
+                shift=True,
+            )
 
         # Clip the timesteps schedule based on denoising_start and denoising_end.
         timesteps = clip_timestep_schedule_fractional(timesteps, self.denoising_start, self.denoising_end)
