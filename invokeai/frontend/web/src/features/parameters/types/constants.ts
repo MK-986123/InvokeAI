@@ -138,6 +138,18 @@ export const SCHEDULER_OPTIONS: ComboboxOption[] = [
 ];
 
 /**
+ * Mapping of FLUX schedulers to human readable name
+ */
+export const FLUX_SCHEDULER_OPTIONS: ComboboxOption[] = [
+  { value: 'flow_euler', label: 'FlowMatch Euler' },
+  { value: 'flow_euler_k', label: 'FlowMatch Euler (Karras)' },
+  { value: 'flow_euler_exp', label: 'FlowMatch Euler (Exponential)' },
+  { value: 'flow_heun', label: 'FlowMatch Heun' },
+] as const;
+
+export type FluxScheduler = (typeof FLUX_SCHEDULER_OPTIONS)[number]['value'];
+
+/**
  * List of base models that make API requests
  */
 export const API_BASE_MODELS: BaseModelType[] = ['imagen3', 'imagen4', 'chatgpt-4o', 'flux-kontext', 'gemini-2.5'];
