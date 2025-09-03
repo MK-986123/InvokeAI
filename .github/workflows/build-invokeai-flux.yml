@@ -1,0 +1,437 @@
+# Build InvokeAI with Enhanced Flux Schedulers
+# This workflow builds InvokeAI with additional Flux schedulers and creates distribution artifacts
+# Supports Linux x86-64 with plans for multi-platform support
+
+name: build invokeai with flux schedulers
+
+"on":
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: 'Python version to use'
+        required: false
+        default: '3.12'
+        type: choice
+        options:
+          - '3.10'
+          - '3.11'
+          - '3.12'
+      create_release:
+        description: 'Create a release with the built artifacts'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - main
+      - 'release/**'
+      - 'feature/**'
+    paths:
+      - 'invokeai/backend/flux/**'
+      - 'pyproject.toml'
+      - 'scripts/build_wheel.sh'
+      - '.github/workflows/build-invokeai-flux.yml'
+  pull_request:
+    paths:
+      - 'invokeai/backend/flux/**'
+      - 'pyproject.toml'
+      - 'scripts/build_wheel.sh'
+      - '.github/workflows/build-invokeai-flux.yml'
+
+env:
+  PYTHONUNBUFFERED: 1
+  FORCE_COLOR: 1
+
+jobs:
+  # Check code quality and run tests
+  quality-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev,test]"
+
+      - name: Run Python format checks
+        run: |
+          python -m ruff check invokeai/backend/flux/
+          python -m ruff format --check invokeai/backend/flux/
+
+      - name: Run Flux scheduler tests
+        run: |
+          python -m pytest tests/app/invocations/test_flux_denoise_schedulers.py -v
+          python -m pytest tests/app/invocations/test_flux_denoise.py -v
+
+  # Frontend checks for completeness
+  frontend-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup frontend dependencies
+        uses: ./.github/actions/install-frontend-deps
+
+      - name: Check for Flux-related frontend changes
+        run: |
+          cd invokeai/frontend/web
+          # Check if Flux graph building is working
+          if [ -f "src/features/nodes/util/graph/generation/buildFLUXGraph.ts" ]; then
+            echo "✅ Flux graph builder found"
+            pnpm tsc --noEmit --project tsconfig.json
+          else
+            echo "⚠️  Flux graph builder not found, skipping TypeScript check"
+          fi
+
+  # Build artifacts for Linux x86-64
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: [quality-checks, frontend-checks]
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+        architecture: ['x64']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: ${{ matrix.architecture }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade build wheel setuptools
+
+      - name: Setup frontend dependencies
+        uses: ./.github/actions/install-frontend-deps
+
+      - name: Verify Flux schedulers are available
+        run: |
+          pip install ".[dev]"
+          python -c "
+          from invokeai.backend.flux.flux_schedulers import FLUX_SCHEDULER_MAP, FLUX_SCHEDULER_NAME
+          print('Available Flux schedulers:')
+          for scheduler in FLUX_SCHEDULER_MAP.keys():
+              print(f'  - {scheduler}')
+          print(f'Total schedulers: {len(FLUX_SCHEDULER_MAP)}')
+          assert len(FLUX_SCHEDULER_MAP) >= 4, 'Expected at least 4 Flux schedulers'
+          print('✅ Enhanced Flux schedulers verified')
+          "
+
+      - name: Build wheel with enhanced Flux schedulers
+        id: build_wheel
+        run: |
+          echo "Building InvokeAI wheel with enhanced Flux schedulers..."
+          ./scripts/build_wheel.sh
+          
+          # Verify the wheel contains Flux schedulers
+          pip install dist/*.whl
+          python -c "
+          try:
+              from invokeai.backend.flux.flux_schedulers import FLUX_SCHEDULER_MAP
+              print('✅ Flux schedulers successfully included in wheel')
+              print('Available schedulers:', list(FLUX_SCHEDULER_MAP.keys()))
+          except ImportError as e:
+              print('❌ Failed to import Flux schedulers from wheel')
+              raise e
+          "
+
+      - name: Create build info
+        run: |
+          cat > build_info.txt << EOF
+          Build Information
+          =================
+          Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          Python Version: ${{ matrix.python-version }}
+          Architecture: ${{ matrix.architecture }}
+          OS: Linux (Ubuntu)
+          Git Commit: ${{ github.sha }}
+          Git Branch: ${{ github.ref_name }}
+          
+          Enhanced Flux Schedulers Included:
+          - flow_euler (Default FlowMatch Euler)
+          - flow_euler_k (Euler with Karras sigmas)
+          - flow_euler_exp (Euler with exponential sigmas)
+          - flow_heun (FlowMatch Heun)
+          
+          Build completed successfully ✅
+          EOF
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: invokeai-flux-wheel-linux-${{ matrix.architecture }}-py${{ matrix.python-version }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            build_info.txt
+          retention-days: 30
+
+      - name: Upload distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: invokeai-flux-dist-linux-${{ matrix.architecture }}-py${{ matrix.python-version }}
+          path: ${{ steps.build_wheel.outputs.DIST_PATH }}
+          retention-days: 30
+
+  # Build artifacts for Windows x86-64
+  build-windows:
+    runs-on: windows-latest
+    needs: [quality-checks, frontend-checks]
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+        architecture: ['x64']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: ${{ matrix.architecture }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade build wheel setuptools
+
+      - name: Setup frontend dependencies
+        uses: ./.github/actions/install-frontend-deps
+
+      - name: Verify Flux schedulers are available
+        shell: bash
+        run: |
+          pip install ".[dev]"
+          python -c "
+          from invokeai.backend.flux.flux_schedulers import FLUX_SCHEDULER_MAP, FLUX_SCHEDULER_NAME
+          print('Available Flux schedulers:')
+          for scheduler in FLUX_SCHEDULER_MAP.keys():
+              print(f'  - {scheduler}')
+          print(f'Total schedulers: {len(FLUX_SCHEDULER_MAP)}')
+          assert len(FLUX_SCHEDULER_MAP) >= 4, 'Expected at least 4 Flux schedulers'
+          print('✅ Enhanced Flux schedulers verified')
+          "
+
+      - name: Build wheel with enhanced Flux schedulers
+        id: build_wheel
+        shell: bash
+        run: |
+          echo "Building InvokeAI wheel with enhanced Flux schedulers..."
+          # Convert bash script for Windows
+          cd scripts
+          bash build_wheel.sh
+          cd ..
+          
+          # Verify the wheel contains Flux schedulers
+          pip install dist/*.whl
+          python -c "
+          try:
+              from invokeai.backend.flux.flux_schedulers import FLUX_SCHEDULER_MAP
+              print('✅ Flux schedulers successfully included in wheel')
+              print('Available schedulers:', list(FLUX_SCHEDULER_MAP.keys()))
+          except ImportError as e:
+              print('❌ Failed to import Flux schedulers from wheel')
+              raise e
+          "
+
+      - name: Create build info
+        shell: bash
+        run: |
+          cat > build_info.txt << EOF
+          Build Information
+          =================
+          Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          Python Version: ${{ matrix.python-version }}
+          Architecture: ${{ matrix.architecture }}
+          OS: Windows
+          Git Commit: ${{ github.sha }}
+          Git Branch: ${{ github.ref_name }}
+          
+          Enhanced Flux Schedulers Included:
+          - flow_euler (Default FlowMatch Euler)
+          - flow_euler_k (Euler with Karras sigmas)
+          - flow_euler_exp (Euler with exponential sigmas)
+          - flow_heun (FlowMatch Heun)
+          
+          Build completed successfully ✅
+          EOF
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: invokeai-flux-wheel-windows-${{ matrix.architecture }}-py${{ matrix.python-version }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            build_info.txt
+          retention-days: 30
+
+      - name: Upload distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: invokeai-flux-dist-windows-${{ matrix.architecture }}-py${{ matrix.python-version }}
+          path: dist/
+          retention-days: 30
+
+  # Test the built wheel
+  test-wheel:
+    runs-on: ${{ matrix.os }}
+    needs: [build-linux, build-windows]
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+        architecture: ['x64']
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: ${{ matrix.architecture }}
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: invokeai-flux-wheel-${{ matrix.platform }}-${{ matrix.architecture }}-py${{ matrix.python-version }}
+          path: ./dist
+
+      - name: Install and test wheel
+        shell: bash
+        run: |
+          # Install the wheel
+          pip install dist/*.whl
+          
+          # Test Flux scheduler functionality
+          python -c "
+          from invokeai.backend.flux.flux_schedulers import FLUX_SCHEDULER_MAP, FLUX_SCHEDULER_PARAMS
+          from diffusers import FlowMatchEulerDiscreteScheduler, FlowMatchHeunDiscreteScheduler
+          
+          print('Testing Flux scheduler instantiation...')
+          
+          # Test each scheduler
+          for scheduler_name, scheduler_class in FLUX_SCHEDULER_MAP.items():
+              print(f'Testing {scheduler_name}...')
+              params = FLUX_SCHEDULER_PARAMS.get(scheduler_name, {})
+              scheduler = scheduler_class(**params)
+              print(f'  ✅ {scheduler_name} instantiated successfully')
+          
+          print('All Flux schedulers tested successfully! 🎉')
+          "
+
+          # Run the specific test for Flux schedulers if available
+          if [ -f "tests/app/invocations/test_flux_denoise_schedulers.py" ]; then
+            python -m pytest tests/app/invocations/test_flux_denoise_schedulers.py -v
+          else
+            echo "⚠️  Flux scheduler tests not found, skipping pytest"
+          fi
+
+  # Create release if requested
+  create-release:
+    if: ${{ github.event.inputs.create_release == 'true' && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    needs: [test-wheel]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create release tag
+        id: create_tag
+        run: |
+          # Generate a unique tag based on timestamp and short commit hash
+          TAG="flux-build-$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          git tag $TAG
+          git push origin $TAG
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.create_tag.outputs.tag }}
+          name: "InvokeAI with Enhanced Flux Schedulers - ${{ steps.create_tag.outputs.tag }}"
+          body: |
+            # InvokeAI Build with Enhanced Flux Schedulers
+            
+            This release contains InvokeAI built with enhanced Flux scheduler support, including:
+            
+            - **flow_euler**: Default FlowMatch Euler scheduler
+            - **flow_euler_k**: Euler scheduler with Karras sigmas
+            - **flow_euler_exp**: Euler scheduler with exponential sigmas
+            - **flow_heun**: FlowMatch Heun scheduler
+            
+            ## Platform Support
+            - ✅ Linux x86-64
+            - ✅ Windows x86-64
+            - 🔧 Additional platforms coming soon
+            
+            ## Installation
+            Download the appropriate wheel file for your Python version and install with:
+            ```bash
+            pip install InvokeAI-*.whl
+            ```
+            
+            ## Build Information
+            - **Commit**: ${{ github.sha }}
+            - **Branch**: ${{ github.ref_name }}
+            - **Python Versions**: 3.11, 3.12
+            - **Build Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+            
+            Tested and verified with enhanced Flux scheduler functionality.
+          draft: false
+          prerelease: true
+          files: |
+            ./artifacts/**/*.whl
+            ./artifacts/**/*.tar.gz
+            ./artifacts/**/build_info.txt
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
