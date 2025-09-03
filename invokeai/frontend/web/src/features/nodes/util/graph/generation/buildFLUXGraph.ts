@@ -114,7 +114,6 @@ export const buildFLUXGraph = async (arg: GraphBuilderArg): Promise<GraphBuilder
     id: getPrefixedId('flux_denoise'),
     guidance,
     num_steps: steps,
-    scheduler: fluxScheduler,
   });
 
   const l2i = g.addNode({
