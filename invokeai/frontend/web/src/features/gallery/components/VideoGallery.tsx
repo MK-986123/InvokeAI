@@ -86,16 +86,25 @@ const useKeyboardNavigation = (
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
-      if (getFocusedRegion() !== 'gallery') {
-        // Only handle keyboard navigation when the gallery is focused
-        return;
-      }
       // Only handle arrow keys
       if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
         return;
       }
       // Don't interfere if user is typing in an input
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      const focusedRegion = getFocusedRegion();
+      // Only handle keyboard navigation when:
+      // 1. Gallery is explicitly focused, OR
+      // 2. No conflicting region is focused (allow navigation from viewer, launchpad, etc.)
+      // Skip if canvas or workflows is focused as they have their own arrow key handlers
+      if (
+        focusedRegion &&
+        focusedRegion !== 'gallery' &&
+        (focusedRegion === 'canvas' || focusedRegion === 'workflows')
+      ) {
         return;
       }
 
