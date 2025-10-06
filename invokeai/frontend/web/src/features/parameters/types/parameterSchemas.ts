@@ -58,6 +58,11 @@ export type ParameterCFGRescaleMultiplier = z.infer<typeof zParameterCFGRescaleM
 // #region Scheduler
 export const [zParameterScheduler, isParameterScheduler] = buildParameter(zSchedulerField);
 export type ParameterScheduler = z.infer<typeof zParameterScheduler>;
+
+// FLUX Scheduler
+export const zFluxSchedulerField = z.enum(['flow_euler', 'flow_euler_k', 'flow_euler_exp', 'flow_heun']);
+export const [zParameterFluxScheduler, isParameterFluxScheduler] = buildParameter(zFluxSchedulerField);
+export type ParameterFluxScheduler = z.infer<typeof zParameterFluxScheduler>;
 // #endregion
 
 // #region seed
