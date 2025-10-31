@@ -31,6 +31,7 @@ from invokeai.app.services.session_queue.session_queue_common import SessionQueu
 from invokeai.app.services.shared.graph import NodeInputError
 from invokeai.app.services.shared.invocation_context import InvocationContextData, build_invocation_context
 from invokeai.app.util.profiler import Profiler
+from invokeai_ext.multigpu import WorkerPool, WorkerResult, start_worker_pool, stop_worker_pool
 
 
 class DefaultSessionRunner(SessionRunnerBase):
@@ -63,6 +64,22 @@ class DefaultSessionRunner(SessionRunnerBase):
         self._services = services
         self._cancel_event = cancel_event
         self._profiler = profiler
+
+    def clone(self) -> "DefaultSessionRunner":
+        """Create a shallow clone of the session runner.
+
+        The clone reuses the callback lists from the original runner so that
+        events continue to flow through the same hooks when the runner is
+        executed by a background worker thread.
+        """
+
+        return DefaultSessionRunner(
+            on_before_run_session_callbacks=list(self._on_before_run_session_callbacks),
+            on_before_run_node_callbacks=list(self._on_before_run_node_callbacks),
+            on_after_run_node_callbacks=list(self._on_after_run_node_callbacks),
+            on_node_error_callbacks=list(self._on_node_error_callbacks),
+            on_after_run_session_callbacks=list(self._on_after_run_session_callbacks),
+        )
 
     def _is_canceled(self) -> bool:
         """Check if the cancel event is set. This is also passed to the invocation context builder and called during
@@ -327,6 +344,7 @@ class DefaultSessionProcessor(SessionProcessorBase):
         self._invoker: Invoker = invoker
         self._queue_item: Optional[SessionQueueItem] = None
         self._invocation: Optional[BaseInvocation] = None
+        self._worker_pool: Optional[WorkerPool] = None
 
         self._resume_event = ThreadEvent()
         self._stop_event = ThreadEvent()
@@ -352,6 +370,22 @@ class DefaultSessionProcessor(SessionProcessorBase):
         )
 
         self.session_runner.start(services=invoker.services, cancel_event=self._cancel_event, profiler=self._profiler)
+
+        if invoker.services.configuration.multi_gpu.enable:
+            try:
+                self._worker_pool = start_worker_pool(
+                    services=invoker.services,
+                    session_runner=self.session_runner,
+                    profiler=self._profiler,
+                )
+                if self._worker_pool is None:
+                    invoker.services.logger.info("Multi-GPU worker pool unavailable; continuing in single-device mode")
+            except Exception as exc:  # noqa: BLE001
+                invoker.services.logger.error(
+                    "Failed to start multi-GPU worker pool: %s", exc
+                )
+                invoker.services.logger.debug(traceback.format_exc())
+
         self._thread = Thread(
             name="session_processor",
             target=self._process,
@@ -366,6 +400,9 @@ class DefaultSessionProcessor(SessionProcessorBase):
 
     def stop(self, *args, **kwargs) -> None:
         self._stop_event.set()
+        if self._worker_pool:
+            stop_worker_pool(self._worker_pool)
+            self._worker_pool = None
 
     def _poll_now(self) -> None:
         self._poll_now_event.set()
@@ -374,12 +411,20 @@ class DefaultSessionProcessor(SessionProcessorBase):
         if self._queue_item and self._queue_item.queue_id == event[1].queue_id:
             self._cancel_event.set()
             self._poll_now()
+        if self._worker_pool:
+            self._worker_pool.cancel_all()
 
     async def _on_batch_enqueued(self, event: FastAPIEvent[BatchEnqueuedEvent]) -> None:
         self._poll_now()
 
     async def _on_queue_item_status_changed(self, event: FastAPIEvent[QueueItemStatusChangedEvent]) -> None:
         # Make sure the cancel event is for the currently processing queue item
+        if self._worker_pool and event[1].item_id in self._worker_pool.active_item_ids():
+            if event[1].status == "canceled":
+                self._worker_pool.cancel(event[1].item_id)
+            if event[1].status in ["completed", "failed", "canceled"]:
+                self._poll_now()
+            return
         if self._queue_item and self._queue_item.item_id != event[1].item_id:
             return
         if self._queue_item and event[1].status in ["completed", "failed", "canceled"]:
@@ -405,9 +450,12 @@ class DefaultSessionProcessor(SessionProcessorBase):
         return self.get_status()
 
     def get_status(self) -> SessionProcessorStatus:
+        is_processing = self._queue_item is not None
+        if self._worker_pool:
+            is_processing = is_processing or bool(self._worker_pool.active_item_ids())
         return SessionProcessorStatus(
             is_started=self._resume_event.is_set(),
-            is_processing=self._queue_item is not None,
+            is_processing=is_processing,
         )
 
     def _process(
@@ -429,15 +477,21 @@ class DefaultSessionProcessor(SessionProcessorBase):
                 try:
                     # Any unhandled exception in this block is a nonfatal processor error and will be handled.
                     # If we are paused, wait for resume event
+                    self._drain_worker_results(timeout=0)
                     resume_event.wait()
 
-                    # Get the next session to process
-                    self._queue_item = self._invoker.services.session_queue.dequeue()
+                    if stop_event.is_set():
+                        break
 
-                    if self._queue_item is None:
+                    self._drain_worker_results()
+
+                    # Get the next session to process
+                    queue_item = self._invoker.services.session_queue.dequeue()
+
+                    if queue_item is None:
                         # The queue was empty, wait for next polling interval or event to try again
                         self._invoker.services.logger.debug("Waiting for next polling interval or event")
-                        poll_now_event.wait(self._polling_interval)
+                        self._wait_for_work(poll_now_event=poll_now_event, stop_event=stop_event)
                         continue
 
                     # GC-ing here can reduce peak memory usage of the invoke process by freeing allocated memory blocks.
@@ -447,12 +501,25 @@ class DefaultSessionProcessor(SessionProcessorBase):
                     gc.collect()
 
                     self._invoker.services.logger.info(
-                        f"Executing queue item {self._queue_item.item_id}, session {self._queue_item.session_id}"
+                        f"Executing queue item {queue_item.item_id}, session {queue_item.session_id}"
                     )
+
+                    if self._worker_pool:
+                        assignment = self._worker_pool.submit(queue_item)
+                        if assignment is not None:
+                            continue
+                        self._invoker.services.logger.warning(
+                            "Multi-GPU worker pool unavailable; reverting to single-device execution"
+                        )
+                        self._disable_worker_pool()
+
+                    self._queue_item = queue_item
                     cancel_event.clear()
 
                     # Run the graph
                     self.session_runner.run(queue_item=self._queue_item)
+                    self._queue_item = None
+                    self._drain_worker_results()
 
                 except Exception as e:
                     error_type = e.__class__.__name__
@@ -464,6 +531,7 @@ class DefaultSessionProcessor(SessionProcessorBase):
                         error_message=error_message,
                         error_traceback=error_traceback,
                     )
+                    self._queue_item = None
                     # Wait for next polling interval or event to try again
                     poll_now_event.wait(self._polling_interval)
                     continue
@@ -480,6 +548,57 @@ class DefaultSessionProcessor(SessionProcessorBase):
             poll_now_event.clear()
             self._queue_item = None
             self._thread_semaphore.release()
+            self._disable_worker_pool()
+
+    def _disable_worker_pool(self) -> None:
+        if self._worker_pool:
+            self._invoker.services.logger.warning("Disabling multi-GPU worker pool; falling back to single-device processing")
+            stop_worker_pool(self._worker_pool)
+            self._worker_pool = None
+
+    def _drain_worker_results(self, timeout: Optional[float] = None) -> None:
+        if not self._worker_pool:
+            return
+        result = self._worker_pool.next_result(timeout=timeout)
+        while result is not None:
+            self._handle_worker_result(result)
+            result = self._worker_pool.next_result(timeout=0)
+
+    def _handle_worker_result(self, result: WorkerResult) -> None:
+        if not self._worker_pool:
+            return
+        if result.queue_item is not None:
+            self._worker_pool.complete(result.queue_item.item_id)
+        if not result.succeeded:
+            error_type = result.error_type or "WorkerError"
+            error_message = result.error_message or "Unknown GPU worker failure"
+            error_traceback = result.error_traceback or ""
+            queue_item = result.queue_item
+            self._disable_worker_pool()
+            self._on_non_fatal_processor_error(
+                queue_item=queue_item,
+                error_type=error_type,
+                error_message=error_message,
+                error_traceback=error_traceback,
+            )
+        else:
+            self._poll_now()
+
+    def _wait_for_work(self, poll_now_event: ThreadEvent, stop_event: ThreadEvent) -> None:
+        if not self._worker_pool:
+            poll_now_event.wait(self._polling_interval)
+            return
+
+        interval = self._polling_interval if self._polling_interval > 0 else 0.1
+        slice_window = min(0.1, interval)
+        if slice_window <= 0:
+            slice_window = interval
+        waited = 0.0
+        while waited < interval and not poll_now_event.is_set() and not stop_event.is_set():
+            self._drain_worker_results(timeout=slice_window)
+            waited += slice_window
+        if not poll_now_event.is_set():
+            poll_now_event.wait(0)
 
     def _on_non_fatal_processor_error(
         self,
