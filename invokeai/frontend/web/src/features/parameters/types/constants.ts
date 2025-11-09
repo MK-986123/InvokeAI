@@ -144,7 +144,12 @@ export const FLUX_SCHEDULER_OPTIONS: ComboboxOption[] = [
   { value: 'flow_euler', label: 'FlowMatch Euler' },
   { value: 'flow_euler_k', label: 'FlowMatch Euler (Karras)' },
   { value: 'flow_euler_exp', label: 'FlowMatch Euler (Exponential)' },
+  { value: 'flow_euler_dyn', label: 'FlowMatch Euler (Dynamic)' },
+  { value: 'flow_euler_dyn_lin', label: 'FlowMatch Euler (Dynamic Linear)' },
+  { value: 'flow_euler_max', label: 'FlowMatch Euler (Wide Range)' },
   { value: 'flow_heun', label: 'FlowMatch Heun' },
+  { value: 'flow_heun_shift', label: 'FlowMatch Heun (Shifted)' },
+  { value: 'flow_heun_fast', label: 'FlowMatch Heun (Fast)' },
 ] as const;
 
 export type FluxScheduler = (typeof FLUX_SCHEDULER_OPTIONS)[number]['value'];
