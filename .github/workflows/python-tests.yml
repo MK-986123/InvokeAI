@@ -67,17 +67,15 @@ jobs:
       - name: Install Git LFS
         run: git lfs install
 
-      - name: Clean working directory
-        run: |
-          if [ -d .git ]; then
-            git clean -fdx
-            git reset --hard
-          fi
-
       - name: checkout
         uses: actions/checkout@v4
         with:
           lfs: true
+
+      - name: Clean working directory
+        run: |
+          git clean -fdx
+          git reset --hard
 
       - name: check for changed python files
         if: ${{ inputs.always_run != true }}
