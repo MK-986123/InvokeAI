@@ -15,7 +15,7 @@ We use https://github.com/openapi-ts/openapi-typescript/ to generate the types.
 
 Pipe the output of the python script to the node script to update the types. There is a `make` target that does this in one fell swoop (after activating venv): `make frontend-typegen`
 
-Alternatively, start the ptyhon server and run `pnpm typegen`.
+Alternatively, start the python server and run `pnpm typegen`.
 
 The schema.ts file is pushed to the repo, and a CI check ensures it is up to date.
 
