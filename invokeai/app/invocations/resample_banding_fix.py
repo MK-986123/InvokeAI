@@ -60,7 +60,7 @@ class ResampleBandingFixInvocation(BaseInvocation):
         input=Input.Connection,
         ui_order=0,
     )
-    negative_conditioning: Union[ConditioningField, List[ConditioningField]] | None = InputField(
+    negative_conditioning: Union[ConditioningField, List[ConditioningField], None] = InputField(
         default=None,
         description=FieldDescriptions.negative_cond,
         input=Input.Connection,
