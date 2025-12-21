@@ -60,6 +60,51 @@ def _get_flux_lora_format(mod: ModelOnDisk) -> FluxLoRAFormat | None:
     return value
 
 
+def _looks_like_flux_lora(state_dict: dict[str | int, Any]) -> bool:
+    """Check if a state dict looks like a FLUX LoRA based on key patterns.
+
+    This is a fallback detector for FLUX LoRAs that don't match any of the specific format detectors.
+    It looks for FLUX-specific key patterns that indicate this is a FLUX LoRA, even if the exact format
+    cannot be determined.
+
+    Note: This function is intentionally conservative. It checks for FLUX transformer-specific keys,
+    not just text encoder keys (lora_te1_, lora_te2_) which are shared with SDXL LoRAs.
+
+    See: https://github.com/invoke-ai/InvokeAI/issues/7131
+    """
+    # FLUX-specific transformer key prefixes - these are unique to FLUX and not used by SD/SDXL
+    flux_transformer_prefixes = {
+        "lora_transformer_",  # OneTrainer format - FLUX uses "lora_transformer_", not "lora_unet_"
+        "transformer.single_transformer_blocks.",  # Diffusers format - FLUX-specific architecture
+        "transformer.transformer_blocks.",  # Diffusers format - FLUX-specific architecture
+        "base_model.model.single_transformer_blocks.",  # PEFT format with FLUX architecture
+        "base_model.model.transformer_blocks.",  # PEFT format with FLUX architecture
+        # AI-Toolkit FLUX LoRAs use "diffusion_model." prefix which is specific to their format.
+        # This prefix is not used by SD/SDXL LoRAs which use "lora_unet_" prefixes instead.
+        "diffusion_model.",
+    }
+
+    # FLUX Kohya transformer format - double/single blocks are FLUX-specific
+    flux_kohya_prefixes = {
+        "lora_unet_double_blocks_",
+        "lora_unet_single_blocks_",
+    }
+
+    all_flux_prefixes = flux_transformer_prefixes | flux_kohya_prefixes
+
+    # Check if any key starts with a FLUX-specific transformer prefix
+    has_flux_transformer_keys = state_dict_has_any_keys_starting_with(state_dict, all_flux_prefixes)
+
+    if not has_flux_transformer_keys:
+        return False
+
+    # Additional validation: Check for LoRA-specific key suffixes
+    lora_suffixes = {".lora_down.weight", ".lora_up.weight", ".lora_A.weight", ".lora_B.weight"}
+    has_lora_suffixes = state_dict_has_any_keys_ending_with(state_dict, lora_suffixes)
+
+    return has_lora_suffixes
+
+
 class LoRA_OMI_Config_Base(LoRA_Config_Base):
     format: Literal[ModelFormat.OMI] = Field(default=ModelFormat.OMI)
 
@@ -187,6 +232,13 @@ class LoRA_LyCORIS_Config_Base(LoRA_Config_Base):
             return BaseModelType.Flux
 
         state_dict = mod.load_state_dict()
+
+        # Check for FLUX LoRA key patterns even if the specific format wasn't detected.
+        # This helps handle FLUX LoRAs with slightly different key structures that don't match
+        # any of the specific format detectors. See: https://github.com/invoke-ai/InvokeAI/issues/7131
+        if _looks_like_flux_lora(state_dict):
+            return BaseModelType.Flux
+
         # If we've gotten here, we assume that the model is a Stable Diffusion model
         token_vector_length = lora_token_vector_length(state_dict)
         if token_vector_length == 768:
