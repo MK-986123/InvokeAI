@@ -344,3 +344,9 @@ reportUntypedBaseClass = "warning"
 reportUntypedClassDecorator = "warning"
 reportUntypedFunctionDecorator = "warning"
 reportUntypedNamedTuple = "warning"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "requests-testadapter>=0.3.0",
+]
