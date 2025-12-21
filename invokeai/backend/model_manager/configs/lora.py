@@ -102,8 +102,6 @@ def _looks_like_flux_lora(state_dict: dict[str | int, Any]) -> bool:
 
     return has_lora_suffixes
 
-    return has_lora_suffixes
-
 
 class LoRA_OMI_Config_Base(LoRA_Config_Base):
     format: Literal[ModelFormat.OMI] = Field(default=ModelFormat.OMI)
