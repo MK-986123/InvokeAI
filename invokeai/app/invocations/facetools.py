@@ -411,16 +411,16 @@ def get_faces_list(
                 fy += increment
                 context.logger.info(f"FaceTools --> Chunk starting at y = {y}")
 
-        for idx in range(len(image_chunks)):
+        for idx, (image_chunk, x_offset_val, y_offset_val) in enumerate(zip(image_chunks, x_offsets, y_offsets)):
             context.logger.info(f"FaceTools --> Evaluating faces in chunk {idx}")
             result = result + generate_face_box_mask(
                 context=context,
                 minimum_confidence=minimum_confidence,
                 x_offset=x_offset,
                 y_offset=y_offset,
-                pil_image=image_chunks[idx],
-                chunk_x_offset=x_offsets[idx],
-                chunk_y_offset=y_offsets[idx],
+                pil_image=image_chunk,
+                chunk_x_offset=x_offset_val,
+                chunk_y_offset=y_offset_val,
                 draw_mesh=draw_mesh,
             )
 
