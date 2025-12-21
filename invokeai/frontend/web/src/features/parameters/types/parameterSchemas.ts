@@ -60,7 +60,17 @@ export const [zParameterScheduler, isParameterScheduler] = buildParameter(zSched
 export type ParameterScheduler = z.infer<typeof zParameterScheduler>;
 
 // FLUX Scheduler
-export const zFluxSchedulerField = z.enum(['flow_euler', 'flow_euler_k', 'flow_euler_exp', 'flow_heun']);
+export const zFluxSchedulerField = z.enum([
+  'flow_euler',
+  'flow_euler_k',
+  'flow_euler_exp',
+  'flow_euler_dyn',
+  'flow_euler_dyn_lin',
+  'flow_euler_max',
+  'flow_heun',
+  'flow_heun_shift',
+  'flow_heun_fast',
+]);
 export const [zParameterFluxScheduler, isParameterFluxScheduler] = buildParameter(zFluxSchedulerField);
 export type ParameterFluxScheduler = z.infer<typeof zParameterFluxScheduler>;
 // #endregion
