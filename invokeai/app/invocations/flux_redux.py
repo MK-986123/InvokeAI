@@ -161,6 +161,8 @@ class FluxReduxInvocation(BaseInvocation):
 
             if not siglip_models:
                 context.logger.error("Error while fetching SigLIP for FLUX Redux")
-                assert len(siglip_models) == 1
+            
+            # Ensure we have exactly one SigLIP model
+            assert siglip_models and len(siglip_models) == 1, f"Expected 1 SigLIP model, got {len(siglip_models)}"
 
         return siglip_models[0]
