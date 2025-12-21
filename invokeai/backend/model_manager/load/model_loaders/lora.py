@@ -43,6 +43,7 @@ from invokeai.backend.patches.lora_conversions.flux_onetrainer_lora_conversion_u
 )
 from invokeai.backend.patches.lora_conversions.sd_lora_conversion_utils import lora_model_from_sd_state_dict
 from invokeai.backend.patches.lora_conversions.sdxl_lora_conversion_utils import convert_sdxl_keys_to_diffusers_format
+from invokeai.backend.util.logging import InvokeAILogger
 
 
 @ModelLoaderRegistry.register(base=BaseModelType.Flux, type=ModelType.LoRA, format=ModelFormat.OMI)
@@ -118,7 +119,10 @@ class LoRALoader(ModelLoader):
                 elif is_state_dict_likely_in_flux_aitoolkit_format(state_dict=state_dict):
                     model = lora_model_from_flux_aitoolkit_state_dict(state_dict=state_dict)
                 else:
-                    raise ValueError("LoRA model is in unsupported FLUX format")
+                    # Fallback: Try different loaders for LoRAs that don't match specific format detectors.
+                    # This handles edge cases where LoRAs have slightly different key patterns.
+                    # See: https://github.com/invoke-ai/InvokeAI/issues/7131
+                    model = self._try_load_flux_lora_with_fallback(state_dict, config)
             else:
                 raise ValueError(f"LoRA model is in unsupported FLUX format: {config.format}")
         elif self._model_base in [BaseModelType.StableDiffusion1, BaseModelType.StableDiffusion2]:
@@ -145,3 +149,43 @@ class LoRALoader(ModelLoader):
                     break
 
         return model_path.resolve()
+
+    def _try_load_flux_lora_with_fallback(
+        self, state_dict: dict[str, torch.Tensor], config: AnyModelConfig
+    ) -> AnyModel:
+        """Try to load a FLUX LoRA using fallback strategies when format detection fails.
+
+        This method attempts different loading strategies for FLUX LoRAs that don't match
+        any of the specific format detectors. It's a best-effort approach for edge cases.
+
+        See: https://github.com/invoke-ai/InvokeAI/issues/7131
+        """
+        logger = InvokeAILogger.get_logger()
+        model_path = Path(config.path)
+
+        # List of (loader_name, loader_function) tuples to try
+        fallback_loaders = [
+            ("OneTrainer", lora_model_from_flux_onetrainer_state_dict),
+            ("Kohya", lora_model_from_flux_kohya_state_dict),
+            ("Diffusers", lambda sd: lora_model_from_flux_diffusers_state_dict(sd, alpha=None)),
+            ("AIToolkit", lora_model_from_flux_aitoolkit_state_dict),
+        ]
+
+        for loader_name, loader_func in fallback_loaders:
+            try:
+                logger.debug(f"Attempting to load FLUX LoRA '{model_path.name}' with {loader_name} loader (fallback)")
+                model = loader_func(state_dict)
+                logger.info(
+                    f"Successfully loaded FLUX LoRA '{model_path.name}' using {loader_name} loader (fallback). "
+                    f"The LoRA format could not be detected automatically."
+                )
+                return model
+            except Exception as e:
+                logger.debug(f"Failed to load with {loader_name} loader: {e}")
+                continue
+
+        raise ValueError(
+            f"LoRA model '{model_path.name}' is in an unsupported FLUX format. "
+            f"None of the available loaders could process this LoRA. "
+            f"Please report this issue at https://github.com/invoke-ai/InvokeAI/issues"
+        )
