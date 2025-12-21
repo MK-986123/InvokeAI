@@ -1,4 +1,3 @@
-import copy
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -550,8 +549,8 @@ class SeamlessModeInvocation(BaseInvocation):
 
     def invoke(self, context: InvocationContext) -> SeamlessModeOutput:
         # Conditionally append 'x' and 'y' based on seamless_x and seamless_y
-        unet = copy.deepcopy(self.unet)
-        vae = copy.deepcopy(self.vae)
+        unet = self.unet.model_copy(deep=True) if self.unet is not None else None
+        vae = self.vae.model_copy(deep=True) if self.vae is not None else None
 
         seamless_axes_list = []
 

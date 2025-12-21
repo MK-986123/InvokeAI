@@ -139,7 +139,7 @@ class FluxReduxInvocation(BaseInvocation):
     def _get_siglip_model(self, context: InvocationContext) -> AnyModelConfig:
         siglip_models = context.models.search_by_attrs(name=siglip.name, base=BaseModelType.Any, type=ModelType.SigLIP)
 
-        if not len(siglip_models) > 0:
+        if not siglip_models:
             context.logger.warning(
                 f"The SigLIP model required by FLUX Redux ({siglip.name}) is not installed. Downloading and installing now. This may take a while."
             )
@@ -159,8 +159,10 @@ class FluxReduxInvocation(BaseInvocation):
                 type=ModelType.SigLIP,
             )
 
-            if len(siglip_models) == 0:
+            if not siglip_models:
                 context.logger.error("Error while fetching SigLIP for FLUX Redux")
-                assert len(siglip_models) == 1
+
+        # Ensure we have exactly one SigLIP model (either from initial search or after download)
+        assert siglip_models and len(siglip_models) == 1, f"Expected 1 SigLIP model, got {len(siglip_models)}"
 
         return siglip_models[0]

@@ -232,7 +232,7 @@ class ModelInstallService(ModelInstallServiceBase):
         source_obj = self._guess_source(source)
         if isinstance(source_obj, LocalModelSource):
             source_obj.inplace = inplace
-        elif isinstance(source_obj, HFModelSource) or isinstance(source_obj, URLModelSource):
+        elif isinstance(source_obj, (HFModelSource, URLModelSource)):
             source_obj.access_token = access_token
         return self.import_model(source_obj, config)
 

@@ -124,7 +124,7 @@ class StringReplaceInvocation(BaseInvocation):
     def invoke(self, context: InvocationContext) -> StringOutput:
         pattern = self.search_string or ""
         new_string = self.string or ""
-        if len(pattern) > 0:
+        if pattern:
             if not self.use_regex:
                 # None regex so make case insensitve
                 pattern = "(?i)" + re.escape(pattern)
