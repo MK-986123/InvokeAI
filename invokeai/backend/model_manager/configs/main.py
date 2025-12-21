@@ -657,3 +657,28 @@ class Main_Diffusers_CogView4_Config(Diffusers_Config_Base, Main_Config_Base, Co
             **override_fields,
             repo_variant=repo_variant,
         )
+
+
+class Main_Diffusers_Qwen_Config(Diffusers_Config_Base, Main_Config_Base, Config_Base):
+    base: Literal[BaseModelType.Qwen] = Field(BaseModelType.Qwen)
+
+    @classmethod
+    def from_model_on_disk(cls, mod: ModelOnDisk, override_fields: dict[str, Any]) -> Self:
+        raise_if_not_dir(mod)
+
+        raise_for_override_fields(cls, override_fields)
+
+        # This check implies the base type - no further validation needed.
+        raise_for_class_name(
+            common_config_paths(mod.path),
+            {
+                "QwenImageTransformer2DModel",
+            },
+        )
+
+        repo_variant = override_fields.get("repo_variant") or cls._get_repo_variant_or_raise(mod)
+
+        return cls(
+            **override_fields,
+            repo_variant=repo_variant,
+        )
