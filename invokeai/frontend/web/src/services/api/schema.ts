@@ -8243,6 +8243,13 @@ export type components = {
              */
             kontext_conditioning?: components["schemas"]["FluxKontextConditioningField"] | components["schemas"]["FluxKontextConditioningField"][] | null;
             /**
+             * Scheduler
+             * @description Flow-matching scheduler for FLUX (Euler/Heun variants). If unset, use built-in schedule.
+             * @default null
+             * @enum {string}
+             */
+            scheduler?: "flow_euler" | "flow_euler_k" | "flow_euler_exp" | "flow_euler_dyn" | "flow_euler_dyn_lin" | "flow_euler_max" | "flow_heun" | "flow_heun_shift" | "flow_heun_fast" | null;
+            /**
              * type
              * @default flux_denoise
              * @constant
