@@ -1,7 +1,7 @@
 # Copyright (c) 2024, Brandon W. Rising and the InvokeAI Development Team
 """FLUX scheduler definitions for flow-matching schedulers compatible with FLUX models."""
 
-from typing import Literal, Type
+from typing import Any, Literal, Type
 
 from diffusers import FlowMatchEulerDiscreteScheduler, FlowMatchHeunDiscreteScheduler
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
@@ -33,7 +33,7 @@ FLUX_SCHEDULER_MAP: dict[FLUX_SCHEDULER_NAME, Type[SchedulerMixin]] = {
 }
 
 # Parameters to pass to each scheduler
-FLUX_SCHEDULER_PARAMS: dict[FLUX_SCHEDULER_NAME, dict[str, any]] = {
+FLUX_SCHEDULER_PARAMS: dict[FLUX_SCHEDULER_NAME, dict[str, Any]] = {
     "flow_euler": {"use_karras_sigmas": False, "use_exponential_sigmas": False},
     "flow_euler_k": {"use_karras_sigmas": True, "use_exponential_sigmas": False},
     "flow_euler_exp": {"use_karras_sigmas": False, "use_exponential_sigmas": True},
