@@ -79,7 +79,9 @@ def _looks_like_flux_lora(state_dict: dict[str | int, Any]) -> bool:
         "transformer.transformer_blocks.",  # Diffusers format - FLUX-specific architecture
         "base_model.model.single_transformer_blocks.",  # PEFT format with FLUX architecture
         "base_model.model.transformer_blocks.",  # PEFT format with FLUX architecture
-        "diffusion_model.",  # AI-Toolkit format
+        # AI-Toolkit FLUX LoRAs use "diffusion_model." prefix which is specific to their format.
+        # This prefix is not used by SD/SDXL LoRAs which use "lora_unet_" prefixes instead.
+        "diffusion_model.",
     }
 
     # FLUX Kohya transformer format - double/single blocks are FLUX-specific

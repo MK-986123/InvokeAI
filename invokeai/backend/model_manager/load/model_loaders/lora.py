@@ -163,7 +163,10 @@ class LoRALoader(ModelLoader):
         logger = InvokeAILogger.get_logger()
         model_path = Path(config.path)
 
-        # List of (loader_name, loader_function) tuples to try
+        # List of (loader_name, loader_function) tuples to try.
+        # Note: Diffusers loader uses alpha=None which is treated as alpha=rank internally.
+        # This is a common convention used by many LoRA trainers, including the official
+        # diffusers training scripts. See: LoRALayerBase.scale() for details.
         fallback_loaders = [
             ("OneTrainer", lora_model_from_flux_onetrainer_state_dict),
             ("Kohya", lora_model_from_flux_kohya_state_dict),
@@ -180,7 +183,11 @@ class LoRALoader(ModelLoader):
                     f"The LoRA format could not be detected automatically."
                 )
                 return model
-            except Exception as e:
+            except (ValueError, KeyError, RuntimeError) as e:
+                # These exceptions are expected when a loader encounters incompatible key formats.
+                # ValueError: Invalid key patterns or conversion failures
+                # KeyError: Missing expected keys in the state dict
+                # RuntimeError: Tensor shape mismatches during loading
                 logger.debug(f"Failed to load with {loader_name} loader: {e}")
                 continue
 
