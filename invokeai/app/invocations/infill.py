@@ -52,7 +52,7 @@ class InfillImageProcessorInvocation(BaseInvocation, WithMetadata, WithBoard):
         input_image, has_alpha = self.load_image()
 
         # If the input image has no alpha channel, return it
-        if has_alpha is False:
+        if not has_alpha:
             return ImageOutput.build(context.images.get_dto(self.image.image_name))
 
         # Perform Infill action

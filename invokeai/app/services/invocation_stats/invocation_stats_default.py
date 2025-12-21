@@ -112,7 +112,7 @@ class InvocationStatsService(InvocationStatsServiceBase):
             cache_misses=cache_stats.misses,
             high_water_mark_gb=cache_stats.high_watermark / GB,
             cache_size_gb=cache_stats.cache_size / GB,
-            total_usage_gb=sum(list(cache_stats.loaded_model_sizes.values())) / GB,
+            total_usage_gb=sum(cache_stats.loaded_model_sizes.values()) / GB,
             models_cached=cache_stats.in_cache,
             models_cleared=cache_stats.cleared,
         )

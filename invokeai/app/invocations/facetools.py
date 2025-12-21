@@ -152,7 +152,7 @@ def prepare_faces_list(
                 should_add = False
                 break
 
-        if should_add is True:
+        if should_add:
             deduped_faces.append(candidate)
 
     sorted_faces = sorted(deduped_faces, key=lambda x: x["y_center"])

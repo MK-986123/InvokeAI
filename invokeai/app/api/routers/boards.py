@@ -85,7 +85,7 @@ async def delete_board(
 ) -> DeleteBoardResult:
     """Deletes a board"""
     try:
-        if include_images is True:
+        if include_images:
             deleted_images = ApiDependencies.invoker.services.board_images.get_all_board_image_names_for_board(
                 board_id=board_id,
                 categories=None,
