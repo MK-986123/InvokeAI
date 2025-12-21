@@ -212,11 +212,11 @@ def extract_model_key(
                 return metadata[label]["key"]
         if "name" in metadata[label]:
             search_model = context.models.search_by_attrs(name=metadata[label]["name"], type=model_type)
-            if len(search_model) > 0:
+            if search_model:
                 return search_model[0].key
         if "model_name" in metadata[label]:
             search_model = context.models.search_by_attrs(name=metadata[label]["model_name"], type=model_type)
-            if len(search_model) > 0:
+            if search_model:
                 return search_model[0].key
 
     return default_key
