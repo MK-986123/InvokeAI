@@ -72,6 +72,7 @@ export const zBaseModelType = z.enum([
   'sdxl-refiner',
   'flux',
   'cogview4',
+  'qwen',
   'unknown',
 ]);
 export type BaseModelType = z.infer<typeof zBaseModelType>;

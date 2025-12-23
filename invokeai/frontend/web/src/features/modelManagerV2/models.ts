@@ -135,6 +135,7 @@ export const MODEL_BASE_TO_COLOR: Record<BaseModelType, string> = {
   'sdxl-refiner': 'invokeBlue',
   flux: 'gold',
   cogview4: 'red',
+  qwen: 'orange',
   unknown: 'red',
 };
 
@@ -173,6 +174,7 @@ export const MODEL_BASE_TO_LONG_NAME: Record<BaseModelType, string> = {
   'sdxl-refiner': 'Stable Diffusion XL Refiner',
   flux: 'FLUX',
   cogview4: 'CogView4',
+  qwen: 'Qwen',
   unknown: 'Unknown',
 };
 
@@ -188,6 +190,7 @@ export const MODEL_BASE_TO_SHORT_NAME: Record<BaseModelType, string> = {
   'sdxl-refiner': 'SDXLR',
   flux: 'FLUX',
   cogview4: 'CogView4',
+  qwen: 'Qwen',
   unknown: 'Unknown',
 };
 
