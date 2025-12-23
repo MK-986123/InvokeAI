@@ -76,7 +76,7 @@ export const zBaseModelType = z.enum([
   'unknown',
 ]);
 export type BaseModelType = z.infer<typeof zBaseModelType>;
-export const zMainModelBase = z.enum(['sd-1', 'sd-2', 'sd-3', 'sdxl', 'flux', 'cogview4']);
+export const zMainModelBase = z.enum(['sd-1', 'sd-2', 'sd-3', 'sdxl', 'flux', 'cogview4', 'qwen']);
 type MainModelBase = z.infer<typeof zMainModelBase>;
 export const isMainModelBase = (base: unknown): base is MainModelBase => zMainModelBase.safeParse(base).success;
 export const zModelType = z.enum([
