@@ -237,7 +237,6 @@ export function parseTokens(tokens: Token[]): ASTNode[] {
       if (!token || token.type === 'rparen') {
         break;
       }
-      // console.log('Parsing token:', token);
 
       switch (token.type) {
         case 'whitespace': {
