@@ -117,7 +117,7 @@ export const addRegions = async ({
           type: 'sdxl_compel_prompt',
           id: getPrefixedId('prompt_region_positive_cond'),
           prompt: region.positivePrompt,
-          style: region.positivePrompt, // TODO: Should we put the positive prompt in both fields?
+          style: region.positivePrompt,
         });
       } else if (isFLUX) {
         regionalPosCond = g.addNode({
