@@ -17,8 +17,6 @@ from invokeai.app.services.shared.sqlite.sqlite_common import SQLiteDirection
 class ImageRecordStorageBase(ABC):
     """Low-level service responsible for interfacing with the image record store."""
 
-    # TODO: Implement an `update()` method
-
     @abstractmethod
     def get(self, image_name: str) -> ImageRecord:
         """Gets an image record."""
