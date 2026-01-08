@@ -47,6 +47,10 @@ class URLRegexTokenPair(BaseModel):
         return v
 
 
+class MultiGPUConfig(BaseModel):
+    enable: bool = Field(default=False, description="Enable the experimental multi-GPU worker pool.")
+
+
 class InvokeAIAppConfig(BaseSettings):
     """Invoke's global app configuration.
 
@@ -168,6 +172,10 @@ class InvokeAIAppConfig(BaseSettings):
     device_working_mem_gb:        float = Field(default=3,                  description="The amount of working memory to keep available on the compute device (in GB). Has no effect if running on CPU. If you are experiencing OOM errors, try increasing this value.")
     enable_partial_loading:        bool = Field(default=False,              description="Enable partial loading of models. This enables models to run with reduced VRAM requirements (at the cost of slower speed) by streaming the model from RAM to VRAM as its used. In some edge cases, partial loading can cause models to run more slowly if they were previously being fully loaded into VRAM.")
     keep_ram_copy_of_weights:      bool = Field(default=True,              description="Whether to keep a full RAM copy of a model's weights when the model is loaded in VRAM. Keeping a RAM copy increases average RAM usage, but speeds up model switching and LoRA patching (assuming there is sufficient RAM). Set this to False if RAM pressure is consistently high.")
+    multi_gpu:              MultiGPUConfig = Field(
+        default_factory=MultiGPUConfig,
+        description="Experimental multi-GPU orchestration options.",
+    )
     # Deprecated CACHE configs
     ram:                Optional[float] = Field(default=None, gt=0,         description="DEPRECATED: This setting is no longer used. It has been replaced by `max_cache_ram_gb`, but most users will not need to use this config since automatic cache size limits should work well in most cases. This config setting will be removed once the new model cache behavior is stable.")
     vram:               Optional[float] = Field(default=None, ge=0,         description="DEPRECATED: This setting is no longer used. It has been replaced by `max_cache_vram_gb`, but most users will not need to use this config since automatic cache size limits should work well in most cases. This config setting will be removed once the new model cache behavior is stable.")
@@ -572,3 +580,4 @@ def get_config() -> InvokeAIAppConfig:
         default_config.write_file(config.config_file_path, as_example=False)
 
     return config
+
