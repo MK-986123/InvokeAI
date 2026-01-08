@@ -127,7 +127,7 @@ def prepare_faces_list(
     """Deduplicates a list of faces, adding IDs to them."""
     deduped_faces: list[FaceResultData] = []
 
-    if len(face_result_list) == 0:
+    if not face_result_list:
         return []
 
     for candidate in face_result_list:
@@ -152,7 +152,7 @@ def prepare_faces_list(
                 should_add = False
                 break
 
-        if should_add is True:
+        if should_add:
             deduped_faces.append(candidate)
 
     sorted_faces = sorted(deduped_faces, key=lambda x: x["y_center"])
@@ -377,7 +377,7 @@ def get_faces_list(
             chunk_y_offset=0,
             draw_mesh=draw_mesh,
         )
-    if should_chunk or len(result) == 0:
+    if should_chunk or not result:
         context.logger.info("FaceTools --> Chunking image (chunk toggled on, or no face found in full image).")
         width, height = image.size
         image_chunks = []
@@ -411,20 +411,20 @@ def get_faces_list(
                 fy += increment
                 context.logger.info(f"FaceTools --> Chunk starting at y = {y}")
 
-        for idx in range(len(image_chunks)):
+        for idx, (image_chunk, x_offset_val, y_offset_val) in enumerate(zip(image_chunks, x_offsets, y_offsets, strict=True)):
             context.logger.info(f"FaceTools --> Evaluating faces in chunk {idx}")
             result = result + generate_face_box_mask(
                 context=context,
                 minimum_confidence=minimum_confidence,
                 x_offset=x_offset,
                 y_offset=y_offset,
-                pil_image=image_chunks[idx],
-                chunk_x_offset=x_offsets[idx],
-                chunk_y_offset=y_offsets[idx],
+                pil_image=image_chunk,
+                chunk_x_offset=x_offset_val,
+                chunk_y_offset=y_offset_val,
                 draw_mesh=draw_mesh,
             )
 
-        if len(result) == 0:
+        if not result:
             # Give up
             context.logger.warning(
                 "FaceTools --> No face detected in chunked input image. Passing through original image."
@@ -467,7 +467,7 @@ class FaceOffInvocation(BaseInvocation, WithMetadata):
             draw_mesh=True,
         )
 
-        if len(all_faces) == 0:
+        if not all_faces:
             context.logger.warning("FaceOff --> No faces detected. Passing through original image.")
             return None
 
@@ -561,7 +561,7 @@ class FaceMaskInvocation(BaseInvocation, WithMetadata):
             # get requested face_ids that are in range
             intersected_face_ids = set(parsed_face_ids) & set(id_range)
 
-            if len(intersected_face_ids) == 0:
+            if not intersected_face_ids:
                 id_range_str = ",".join([str(id) for id in id_range])
                 context.logger.warning(
                     f"Face IDs must be in range of detected faces - requested {self.face_ids}, detected {id_range_str}. Passing through original image."

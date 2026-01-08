@@ -2,7 +2,6 @@
 # https://github.com/skunkworxdark/metadata-linked-nodes
 # Thanks to @skunworkxdark for the original implementation!
 
-import copy
 from typing import Any, Dict, Literal, Optional, TypeVar, Union
 
 from pydantic import model_validator
@@ -213,11 +212,11 @@ def extract_model_key(
                 return metadata[label]["key"]
         if "name" in metadata[label]:
             search_model = context.models.search_by_attrs(name=metadata[label]["name"], type=model_type)
-            if len(search_model) > 0:
+            if search_model:
                 return search_model[0].key
         if "model_name" in metadata[label]:
             search_model = context.models.search_by_attrs(name=metadata[label]["model_name"], type=model_type)
-            if len(search_model) > 0:
+            if search_model:
                 return search_model[0].key
 
     return default_key
@@ -865,10 +864,10 @@ class MetadataToLorasInvocation(BaseInvocation, WithMetadata):
         output = LoRALoaderOutput()
 
         if self.unet is not None:
-            output.unet = copy.deepcopy(self.unet)
+            output.unet = self.unet.model_copy(deep=True)
 
         if self.clip is not None:
-            output.clip = copy.deepcopy(self.clip)
+            output.clip = self.clip.model_copy(deep=True)
 
         for lora in loras:
             model_key = extract_model_key(lora, "model", "", ModelType.LoRA, context)
@@ -942,13 +941,13 @@ class MetadataToSDXLLorasInvocation(BaseInvocation, WithMetadata):
         output = SDXLLoRALoaderOutput()
 
         if self.unet is not None:
-            output.unet = copy.deepcopy(self.unet)
+            output.unet = self.unet.model_copy(deep=True)
 
         if self.clip is not None:
-            output.clip = copy.deepcopy(self.clip)
+            output.clip = self.clip.model_copy(deep=True)
 
         if self.clip2 is not None:
-            output.clip2 = copy.deepcopy(self.clip2)
+            output.clip2 = self.clip2.model_copy(deep=True)
 
         for lora in loras:
             model_key = extract_model_key(lora, "model", "", ModelType.LoRA, context)
