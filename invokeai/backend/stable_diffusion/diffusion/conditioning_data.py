@@ -89,6 +89,26 @@ class ZImageConditioningInfo:
 
 
 @dataclass
+class Flux2ConditioningInfo:
+    """FLUX.2 text conditioning information from Qwen3 text encoder.
+
+    FLUX.2 uses Qwen3 encoder with 3-layer hidden state concatenation:
+    - Last 3 hidden layers (L, L-1, L-2) are concatenated along feature dimension
+    - This produces embeddings of dimension 7680 (3 * 2560) for 4B model
+    - Or 12288 for 9B model (with larger Qwen3 encoder)
+    """
+
+    qwen3_embeds: torch.Tensor
+    """Text embeddings from Qwen3 encoder with 3-layer concatenation.
+    Shape: (batch_size, seq_len, joint_attention_dim) where joint_attention_dim is 7680 or 12288.
+    """
+
+    def to(self, device: torch.device | None = None, dtype: torch.dtype | None = None):
+        self.qwen3_embeds = self.qwen3_embeds.to(device=device, dtype=dtype)
+        return self
+
+
+@dataclass
 class ConditioningFieldData:
     # If you change this class, adding more types, you _must_ update the instantiation of ObjectSerializerDisk in
     # invokeai/app/api/dependencies.py, adding the types to the list of safe globals. If you do not, torch will be
@@ -100,6 +120,7 @@ class ConditioningFieldData:
         | List[SD3ConditioningInfo]
         | List[CogView4ConditioningInfo]
         | List[ZImageConditioningInfo]
+        | List[Flux2ConditioningInfo]
     )
 
 
