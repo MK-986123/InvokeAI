@@ -23,6 +23,7 @@ from invokeai.backend.model_manager.configs.identification_utils import (
 from invokeai.backend.model_manager.model_on_disk import ModelOnDisk
 from invokeai.backend.model_manager.taxonomy import (
     BaseModelType,
+    Flux2VariantType,
     FluxVariantType,
     ModelFormat,
     ModelType,
@@ -789,3 +790,132 @@ class Main_GGUF_ZImage_Config(Checkpoint_Config_Base, Main_Config_Base, Config_B
         has_ggml_tensors = _has_ggml_tensors(mod.load_state_dict())
         if not has_ggml_tensors:
             raise NotAMatchError("state dict does not look like GGUF quantized")
+
+
+# =============================================================================
+# FLUX.2 Model Configuration
+# =============================================================================
+
+
+def _has_flux2_keys(state_dict: dict[str | int, Any]) -> bool:
+    """Check if state dict contains FLUX.2-specific keys.
+
+    FLUX.2 models have a distinct key structure from FLUX.1:
+    - Uses shared modulation layers (double_stream_modulation_img/txt, single_stream_modulation)
+    - Has img_in.weight with shape [hidden_size, 128] (128 in_channels vs FLUX.1's 64)
+    - Has txt_in.weight with shape [hidden_size, joint_attention_dim] (7680/12288 vs FLUX.1's 4096)
+    """
+    # FLUX.2-specific keys that distinguish it from FLUX.1
+    flux2_specific_keys = {
+        "double_stream_modulation_img.lin.weight",
+        "double_stream_modulation_txt.lin.weight",
+        "single_stream_modulation.lin.weight",
+    }
+    return any(key in state_dict for key in flux2_specific_keys)
+
+
+def _get_flux2_variant(state_dict: dict[str | int, Any]) -> Flux2VariantType | None:
+    """Determine FLUX.2 variant from state dict.
+
+    FLUX.2-klein-4B:
+    - hidden_size = 3072 (24 heads * 128 dim)
+    - 5 double blocks, 20 single blocks
+    - joint_attention_dim = 7680
+
+    FLUX.2-klein-9B:
+    - hidden_size = 4096 (32 heads * 128 dim)
+    - 8 double blocks, 24 single blocks
+    - joint_attention_dim = 12288
+    """
+    # Check hidden_size from img_in.weight shape
+    img_in_weight = state_dict.get("img_in.weight")
+    if img_in_weight is None:
+        return None
+
+    hidden_size = img_in_weight.shape[0]
+    in_channels = img_in_weight.shape[1]
+
+    # Verify it's FLUX.2 (in_channels=128)
+    if in_channels != 128:
+        return None
+
+    # Count double and single blocks
+    num_double_blocks = 0
+    num_single_blocks = 0
+    for key in state_dict.keys():
+        if isinstance(key, str):
+            if key.startswith("double_blocks."):
+                block_idx = int(key.split(".")[1])
+                num_double_blocks = max(num_double_blocks, block_idx + 1)
+            elif key.startswith("single_blocks."):
+                block_idx = int(key.split(".")[1])
+                num_single_blocks = max(num_single_blocks, block_idx + 1)
+
+    # Determine variant based on architecture
+    # 4B: hidden_size=3072, 5 double, 20 single
+    # 9B: hidden_size=4096, 8 double, 24 single
+    if hidden_size == 3072 and num_double_blocks == 5 and num_single_blocks == 20:
+        return Flux2VariantType.Klein4B
+    elif hidden_size == 4096 and num_double_blocks == 8 and num_single_blocks == 24:
+        # Check if FP8 quantized
+        has_fp8_keys = any(
+            isinstance(k, str) and ".input_scale" in k
+            for k in state_dict.keys()
+        )
+        if has_fp8_keys:
+            return Flux2VariantType.Klein9BFP8
+        return Flux2VariantType.Klein9B
+
+    return None
+
+
+class Main_Checkpoint_FLUX2_Config(Checkpoint_Config_Base, Main_Config_Base, Config_Base):
+    """Model config for FLUX.2 checkpoint models (e.g., FLUX.2-klein-4B, FLUX.2-klein-9B).
+
+    FLUX.2 is a distinct architecture from FLUX.1 with:
+    - Different transformer structure (shared modulation layers)
+    - Qwen3 text encoder instead of CLIP+T5
+    - Different VAE (32 latent channels vs 16)
+    - in_channels=128 (vs FLUX.1's 64)
+    """
+
+    format: Literal[ModelFormat.Checkpoint] = Field(default=ModelFormat.Checkpoint)
+    base: Literal[BaseModelType.Flux2] = Field(default=BaseModelType.Flux2)
+
+    variant: Flux2VariantType = Field()
+
+    @classmethod
+    def from_model_on_disk(cls, mod: ModelOnDisk, override_fields: dict[str, Any]) -> Self:
+        raise_if_not_file(mod)
+
+        raise_for_override_fields(cls, override_fields)
+
+        cls._validate_looks_like_flux2(mod)
+
+        cls._validate_does_not_look_like_gguf_quantized(mod)
+
+        variant = override_fields.get("variant") or cls._get_variant_or_raise(mod)
+
+        return cls(**override_fields, variant=variant)
+
+    @classmethod
+    def _validate_looks_like_flux2(cls, mod: ModelOnDisk) -> None:
+        state_dict = mod.load_state_dict()
+        if not _has_flux2_keys(state_dict):
+            raise NotAMatchError("state dict does not look like a FLUX.2 checkpoint")
+
+    @classmethod
+    def _get_variant_or_raise(cls, mod: ModelOnDisk) -> Flux2VariantType:
+        state_dict = mod.load_state_dict()
+        variant = _get_flux2_variant(state_dict)
+
+        if variant is None:
+            raise NotAMatchError("unable to determine FLUX.2 variant from state dict")
+
+        return variant
+
+    @classmethod
+    def _validate_does_not_look_like_gguf_quantized(cls, mod: ModelOnDisk) -> None:
+        has_ggml_tensors = _has_ggml_tensors(mod.load_state_dict())
+        if has_ggml_tensors:
+            raise NotAMatchError("state dict looks like GGUF quantized")

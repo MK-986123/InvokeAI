@@ -57,6 +57,7 @@ from invokeai.backend.model_manager.configs.lora import (
 from invokeai.backend.model_manager.configs.main import (
     Main_BnBNF4_FLUX_Config,
     Main_Checkpoint_FLUX_Config,
+    Main_Checkpoint_FLUX2_Config,
     Main_Checkpoint_SD1_Config,
     Main_Checkpoint_SD2_Config,
     Main_Checkpoint_SDXL_Config,
@@ -156,6 +157,7 @@ AnyModelConfig = Annotated[
         Annotated[Main_Checkpoint_SDXL_Config, Main_Checkpoint_SDXL_Config.get_tag()],
         Annotated[Main_Checkpoint_SDXLRefiner_Config, Main_Checkpoint_SDXLRefiner_Config.get_tag()],
         Annotated[Main_Checkpoint_FLUX_Config, Main_Checkpoint_FLUX_Config.get_tag()],
+        Annotated[Main_Checkpoint_FLUX2_Config, Main_Checkpoint_FLUX2_Config.get_tag()],
         Annotated[Main_Checkpoint_ZImage_Config, Main_Checkpoint_ZImage_Config.get_tag()],
         # Main (Pipeline) - quantized formats
         Annotated[Main_BnBNF4_FLUX_Config, Main_BnBNF4_FLUX_Config.get_tag()],
