@@ -1,7 +1,7 @@
 """Flow Matching scheduler definitions and mapping.
 
 This module provides the scheduler types and mapping for Flow Matching models
-(Flux and Z-Image), supporting multiple schedulers from the diffusers library.
+(Flux, FLUX.2, and Z-Image), supporting multiple schedulers from the diffusers library.
 """
 
 from typing import Literal, Type
@@ -38,6 +38,22 @@ FLUX_SCHEDULER_MAP: dict[str, Type[SchedulerMixin]] = {
 
 if _HAS_LCM:
     FLUX_SCHEDULER_MAP["lcm"] = FlowMatchLCMScheduler
+
+
+# FLUX.2 scheduler types
+# FLUX.2-klein uses Rectified Flow with exponential time-shifting (shift=3.0)
+# Distilled models use 4 steps, base models use 20-50 steps
+FLUX2_SCHEDULER_NAME_VALUES = Literal["euler", "heun"]
+
+FLUX2_SCHEDULER_LABELS: dict[str, str] = {
+    "euler": "Euler",
+    "heun": "Heun (2nd order)",
+}
+
+FLUX2_SCHEDULER_MAP: dict[str, Type[SchedulerMixin]] = {
+    "euler": FlowMatchEulerDiscreteScheduler,
+    "heun": FlowMatchHeunDiscreteScheduler,
+}
 
 
 # Z-Image scheduler types (same schedulers as Flux, both use Flow Matching)

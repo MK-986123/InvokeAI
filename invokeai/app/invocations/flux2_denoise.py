@@ -49,6 +49,9 @@ from invokeai.backend.util.devices import TorchDevice
 # LoRA prefix for FLUX.2 transformer patching
 FLUX2_LORA_TRANSFORMER_PREFIX = ""
 
+# Timestep scaling factor for flow matching
+FLUX2_TIMESTEP_SCALE = 1000
+
 
 @invocation(
     "flux2_denoise",
@@ -273,7 +276,9 @@ class Flux2DenoiseInvocation(BaseInvocation):
             t_next = timesteps[step_idx + 1]
 
             # Create timestep tensor
-            timestep_tensor = torch.full((x.shape[0],), t_curr * 1000, device=x.device, dtype=x.dtype)
+            timestep_tensor = torch.full(
+                (x.shape[0],), t_curr * FLUX2_TIMESTEP_SCALE, device=x.device, dtype=x.dtype
+            )
 
             # Forward pass through transformer
             # FLUX.2 predicts the velocity field for flow matching
@@ -300,7 +305,7 @@ class Flux2DenoiseInvocation(BaseInvocation):
                     step=step_idx + 1,
                     order=1,
                     total_steps=total_steps,
-                    timestep=int(t_curr * 1000),
+                    timestep=int(t_curr * FLUX2_TIMESTEP_SCALE),
                     latents=x,
                 )
             )

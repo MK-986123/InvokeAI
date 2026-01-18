@@ -27,6 +27,9 @@ from invokeai.backend.util.devices import TorchDevice
 # FLUX.2 uses scaling factor of 1.0 (internalized)
 FLUX2_VAE_SCALING_FACTOR = 1.0
 
+# FLUX.2 VAE spatial compression factor (8x)
+FLUX2_VAE_COMPRESSION_FACTOR = 8
+
 
 @invocation(
     "flux2_vae_decode",
@@ -112,7 +115,8 @@ class Flux2VaeDecodeInvocation(BaseInvocation, WithMetadata, WithBoard):
             # Enable tiling for memory efficiency
             if tiled and hasattr(vae, "enable_tiling"):
                 if tile_size > 0:
-                    vae.enable_tiling(tile_sample_min_size=tile_size // 8)
+                    # Convert from pixel space to latent space tile size
+                    vae.enable_tiling(tile_sample_min_size=tile_size // FLUX2_VAE_COMPRESSION_FACTOR)
                 else:
                     vae.enable_tiling()
             elif hasattr(vae, "disable_tiling"):

@@ -125,7 +125,7 @@ def _find_last_index_ge_val(timesteps: list[float], val: float, eps: float = 1e-
 
     Uses epsilon-close equality to avoid potential floating point errors.
     """
-    idx = len(list(filter(lambda t: t >= (val - eps), timesteps))) - 1
+    idx = sum(1 for t in timesteps if t >= (val - eps)) - 1
     assert idx >= 0
     return idx
 

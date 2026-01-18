@@ -35,12 +35,13 @@ class TestExponentialTimeShift:
         assert t_shifted[0].item() == pytest.approx(0.0, abs=1e-6)
         assert t_shifted[1].item() == pytest.approx(1.0, abs=1e-6)
 
-    def test_shift_moves_values_toward_one(self):
-        """Test that positive shift biases values toward 1 (high timesteps)."""
+    def test_shift_moves_values_toward_zero(self):
+        """Test that positive shift compresses values toward 0 (concentrates steps at high noise)."""
         t = torch.tensor([0.5])
         t_shifted = exponential_time_shift(t, shift=3.0)
-        # With positive shift, 0.5 should become > 0.5
-        assert t_shifted[0].item() > 0.5
+        # With positive shift, 0.5 becomes < 0.5 (compressed toward 0)
+        # This concentrates more steps near t=1 (high noise) where semantic structure forms
+        assert t_shifted[0].item() < 0.5
 
     def test_shift_formula_correctness(self):
         """Test the exponential shift formula: t_shifted = (e^(μ*t) - 1) / (e^μ - 1)."""
@@ -82,12 +83,13 @@ class TestFlux2Schedule:
             assert s == pytest.approx(e, abs=1e-6)
 
     def test_schedule_with_shift_biased(self):
-        """Test that shifted schedule is biased toward high timesteps."""
+        """Test that shifted schedule compresses values toward 0 (concentrates steps at high noise)."""
         schedule_no_shift = get_flux2_schedule(num_steps=4, use_exponential_shift=False)
         schedule_with_shift = get_flux2_schedule(num_steps=4, shift=3.0, use_exponential_shift=True)
 
-        # Middle values should be higher with shift (biased toward 1)
-        assert schedule_with_shift[2] > schedule_no_shift[2]
+        # Middle values should be lower with shift (compressed toward 0)
+        # This means more timesteps are spent near t=1 (high noise) where semantic structure forms
+        assert schedule_with_shift[2] < schedule_no_shift[2]
 
 
 class TestFlux2ClipSchedule:

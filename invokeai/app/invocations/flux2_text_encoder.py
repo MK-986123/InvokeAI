@@ -162,10 +162,8 @@ class Flux2TextEncoderInvocation(BaseInvocation):
 
             # Check for truncation
             untruncated_ids = tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
-            if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(
-                text_input_ids, untruncated_ids
-            ):
-                removed_text = tokenizer.batch_decode(untruncated_ids[:, self.max_seq_len - 1 : -1])
+            if untruncated_ids.shape[-1] > text_input_ids.shape[-1]:
+                removed_text = tokenizer.batch_decode(untruncated_ids[:, self.max_seq_len:])
                 context.logger.warning(
                     f"Prompt truncated. The following was removed: {removed_text}"
                 )
