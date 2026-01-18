@@ -85,3 +85,12 @@ def get_flux2_max_seq_length(variant: AnyVariant) -> int:
 # Default inference settings for FLUX.2-klein (distilled for fast inference)
 FLUX2_KLEIN_DEFAULT_STEPS = 4
 FLUX2_KLEIN_DEFAULT_GUIDANCE = 1.0  # Guidance scale (not used in distilled)
+
+# Flow matching scheduler settings for FLUX.2-klein
+# Exponential time-shifting with shift=3.0 is used for optimal flow trajectory
+FLUX2_KLEIN_SHIFT = 3.0
+FLUX2_KLEIN_USE_EXPONENTIAL_SHIFT = True
+
+# Base model settings (for non-distilled variants, if any)
+FLUX2_BASE_DEFAULT_STEPS = 28
+FLUX2_BASE_SHIFT = 3.0

@@ -229,6 +229,8 @@ class FieldDescriptions:
     vllm_model = "The VLLM model to use"
     flux_fill_conditioning = "FLUX Fill conditioning tensor"
     flux_kontext_conditioning = "FLUX Kontext conditioning (reference image)"
+    flux2_model = "FLUX.2 model (Transformer) to load"
+    flux2_conditioning = "FLUX.2 conditioning tensor"
 
 
 class ImageField(BaseModel):
@@ -331,6 +333,21 @@ class CogView4ConditioningField(BaseModel):
 
 class ZImageConditioningField(BaseModel):
     """A Z-Image conditioning tensor primitive value"""
+
+    conditioning_name: str = Field(description="The name of conditioning tensor")
+    mask: Optional[TensorField] = Field(
+        default=None,
+        description="The mask associated with this conditioning tensor for regional prompting. "
+        "Excluded regions should be set to False, included regions should be set to True.",
+    )
+
+
+class Flux2ConditioningField(BaseModel):
+    """A FLUX.2 conditioning tensor primitive value.
+
+    FLUX.2 uses Qwen3 text encoder which produces embeddings via 3-layer concatenation
+    (last 3 hidden layers concatenated along feature dimension).
+    """
 
     conditioning_name: str = Field(description="The name of conditioning tensor")
     mask: Optional[TensorField] = Field(
