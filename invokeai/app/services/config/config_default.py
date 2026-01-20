@@ -110,6 +110,7 @@ class InvokeAIAppConfig(BaseSettings):
         scan_models_on_startup: Scan the models directory on startup, registering orphaned models. This is typically only used in conjunction with `use_memory_db` for testing purposes.
         unsafe_disable_picklescan: UNSAFE. Disable the picklescan security check during model installation. Recommended only for development and testing purposes. This will allow arbitrary code execution during model installation, so should never be used in production.
         allow_unknown_models: Allow installation of models that we are unable to identify. If enabled, models will be marked as `unknown` in the database, and will not have any metadata associated with them. If disabled, unknown models will be rejected during installation.
+        strict_flux_state_dict_validation: When enabled, validate FLUX checkpoint state_dict shapes during model loading.
     """
 
     _root: Optional[Path] = PrivateAttr(default=None)
@@ -202,6 +203,7 @@ class InvokeAIAppConfig(BaseSettings):
     scan_models_on_startup:        bool = Field(default=False,              description="Scan the models directory on startup, registering orphaned models. This is typically only used in conjunction with `use_memory_db` for testing purposes.")
     unsafe_disable_picklescan:     bool = Field(default=False,              description="UNSAFE. Disable the picklescan security check during model installation. Recommended only for development and testing purposes. This will allow arbitrary code execution during model installation, so should never be used in production.")
     allow_unknown_models:          bool = Field(default=True,              description="Allow installation of models that we are unable to identify. If enabled, models will be marked as `unknown` in the database, and will not have any metadata associated with them. If disabled, unknown models will be rejected during installation.")
+    strict_flux_state_dict_validation: bool = Field(default=False,         description="Validate FLUX checkpoint state_dict shapes during model loading.")
 
     # fmt: on
 

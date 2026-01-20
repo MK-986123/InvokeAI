@@ -33,6 +33,7 @@ from invokeai.backend.flux.ip_adapter.xlabs_ip_adapter_flux import (
 from invokeai.backend.flux.model import Flux
 from invokeai.backend.flux.modules.autoencoder import AutoEncoder
 from invokeai.backend.flux.redux.flux_redux_model import FluxReduxModel
+from invokeai.backend.flux.state_dict_mapping import validate_flux_state_dict_shapes
 from invokeai.backend.flux.util import get_flux_ae_params, get_flux_transformers_params
 from invokeai.backend.model_manager.configs.base import Checkpoint_Config_Base
 from invokeai.backend.model_manager.configs.clip_embed import CLIPEmbed_Diffusers_Config_Base
@@ -237,12 +238,22 @@ class FluxCheckpointModel(ModelLoader):
         assert isinstance(config, Main_Checkpoint_FLUX_Config)
         model_path = Path(config.path)
 
+        params = get_flux_transformers_params(config.variant)
         with accelerate.init_empty_weights():
-            model = Flux(get_flux_transformers_params(config.variant))
+            model = Flux(params)
 
         sd = load_file(model_path)
         if "model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale" in sd:
             sd = convert_bundle_to_flux_transformer_checkpoint(sd)
+        if app_config.strict_flux_state_dict_validation:
+            validation = validate_flux_state_dict_shapes(
+                sd,
+                hidden_size=params.hidden_size,
+                mlp_ratio=params.mlp_ratio,
+            )
+            if not validation.ok:
+                formatted_errors = "\n  - ".join(validation.errors)
+                raise ValueError(f"FLUX state dict validation failed:\n  - {formatted_errors}")
         new_sd_size = sum([ten.nelement() * torch.bfloat16.itemsize for ten in sd.values()])
         self._ram_cache.make_room(new_sd_size)
         for k in sd.keys():
