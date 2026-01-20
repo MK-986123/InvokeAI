@@ -111,7 +111,7 @@ def _collect_fp8_layers(keys: list[str]) -> list[str]:
     for key in keys:
         if key.endswith((".input_scale", ".weight_scale")):
             # Normalize bundle-style keys by removing the prefix
-            normalized_key = key[len(bundle_prefix) :] if key.startswith(bundle_prefix) else key
+            normalized_key = key[len(bundle_prefix):] if key.startswith(bundle_prefix) else key
             fp8_bases.add(normalized_key.rsplit(".", 1)[0])
     return sorted(fp8_bases)
 
@@ -134,7 +134,7 @@ def _is_expected_prefix(key: str) -> bool:
     # that we can reuse the same expected prefixes for both formats.
     bundle_prefix = "model.diffusion_model."
     if key.startswith(bundle_prefix):
-        normalized_key = key[len(bundle_prefix) :]
+        normalized_key = key[len(bundle_prefix):]
     else:
         normalized_key = key
     return normalized_key.startswith(prefixes)
