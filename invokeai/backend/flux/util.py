@@ -46,6 +46,8 @@ _flux_max_seq_lengths: dict[AnyVariant, Literal[256, 512]] = {
     FluxVariantType.Dev: 512,
     FluxVariantType.DevFill: 512,
     FluxVariantType.Schnell: 256,
+    FluxVariantType.Klein4B: 512,
+    FluxVariantType.Klein9B: 512,
 }
 
 
@@ -73,8 +75,23 @@ def get_flux_ae_params() -> AutoEncoderParams:
     return _flux_ae_params
 
 
+def _validate_flux_params(params: FluxParams) -> FluxParams:
+    if params.hidden_size % params.num_heads != 0:
+        raise ValueError(
+            f"Hidden size {params.hidden_size} must be divisible by num_heads {params.num_heads} for {params}."
+        )
+    pe_dim = params.hidden_size // params.num_heads
+    if sum(params.axes_dim) != pe_dim:
+        raise ValueError(f"Got {params.axes_dim} but expected positional dim {pe_dim} for {params}.")
+    return params
+
+
+def _build_flux_params(**kwargs: object) -> FluxParams:
+    return _validate_flux_params(FluxParams(**kwargs))
+
+
 _flux_transformer_params: dict[AnyVariant, FluxParams] = {
-    FluxVariantType.Dev: FluxParams(
+    FluxVariantType.Dev: _build_flux_params(
         in_channels=64,
         vec_in_dim=768,
         context_in_dim=4096,
@@ -88,7 +105,7 @@ _flux_transformer_params: dict[AnyVariant, FluxParams] = {
         qkv_bias=True,
         guidance_embed=True,
     ),
-    FluxVariantType.Schnell: FluxParams(
+    FluxVariantType.Schnell: _build_flux_params(
         in_channels=64,
         vec_in_dim=768,
         context_in_dim=4096,
@@ -102,7 +119,7 @@ _flux_transformer_params: dict[AnyVariant, FluxParams] = {
         qkv_bias=True,
         guidance_embed=False,
     ),
-    FluxVariantType.DevFill: FluxParams(
+    FluxVariantType.DevFill: _build_flux_params(
         in_channels=384,
         out_channels=64,
         vec_in_dim=768,
@@ -116,6 +133,34 @@ _flux_transformer_params: dict[AnyVariant, FluxParams] = {
         theta=10_000,
         qkv_bias=True,
         guidance_embed=True,
+    ),
+    FluxVariantType.Klein4B: _build_flux_params(
+        in_channels=128,
+        vec_in_dim=2560,
+        context_in_dim=7680,
+        hidden_size=3072,
+        mlp_ratio=3.0,
+        num_heads=24,
+        depth=5,
+        depth_single_blocks=20,
+        axes_dim=[32, 32, 32, 32],
+        theta=2000,
+        qkv_bias=False,
+        guidance_embed=False,
+    ),
+    FluxVariantType.Klein9B: _build_flux_params(
+        in_channels=128,
+        vec_in_dim=4096,
+        context_in_dim=12288,
+        hidden_size=4096,
+        mlp_ratio=3.0,
+        num_heads=32,
+        depth=8,
+        depth_single_blocks=24,
+        axes_dim=[32, 32, 32, 32],
+        theta=2000,
+        qkv_bias=False,
+        guidance_embed=False,
     ),
 }
 

@@ -271,6 +271,18 @@ class Main_Checkpoint_SDXLRefiner_Config(Main_SD_Checkpoint_Config_Base, Config_
 def _get_flux_variant(state_dict: dict[str | int, Any]) -> FluxVariantType | None:
     # FLUX Model variant types are distinguished by input channels and the presence of certain keys.
 
+    def _get_first_tensor(keys: set[str]) -> Any | None:
+        for key in keys:
+            if key in state_dict:
+                return state_dict[key]
+        return None
+
+    def _count_blocks(prefix: str, key_suffix: str) -> int:
+        block_index = 0
+        while f"{prefix}double_blocks.{block_index}.{key_suffix}" in state_dict:
+            block_index += 1
+        return block_index
+
     # Input channels are derived from the shape of either "img_in.weight" or "model.diffusion_model.img_in.weight".
     #
     # Known models that use the latter key:
@@ -285,17 +297,43 @@ def _get_flux_variant(state_dict: dict[str | int, Any]) -> FluxVariantType | Non
     # - Unsure of quantized FLUX Fill models
     # - Unsure of GGUF-quantized models
 
-    in_channels = None
-    for key in {"img_in.weight", "model.diffusion_model.img_in.weight"}:
-        if key in state_dict:
-            in_channels = state_dict[key].shape[1]
-            break
+    img_in_weight = _get_first_tensor({"img_in.weight", "model.diffusion_model.img_in.weight"})
+    txt_in_weight = _get_first_tensor({"txt_in.weight", "model.diffusion_model.txt_in.weight"})
+    block_prefix = (
+        "model.diffusion_model."
+        if "model.diffusion_model.double_blocks.0.img_attn.qkv.weight" in state_dict
+        else ""
+    )
 
-    if in_channels is None:
+    if img_in_weight is None:
         # TODO(psyche): Should we have a graceful fallback here? Previously we fell back to the "normal" variant,
         # but this variant is no longer used for FLUX models. If we get here, but the model is definitely a FLUX
         # model, we should figure out a good fallback value.
         return None
+
+    in_channels = img_in_weight.shape[1]
+    hidden_size = img_in_weight.shape[0]
+    context_in_dim = txt_in_weight.shape[1] if txt_in_weight is not None else None
+    double_blocks = _count_blocks(block_prefix, "img_attn.qkv.weight")
+    single_blocks = 0
+    while f"{block_prefix}single_blocks.{single_blocks}.linear1.weight" in state_dict:
+        single_blocks += 1
+
+    if in_channels in {1, 128} and context_in_dim is not None:
+        if (
+            context_in_dim == 7680
+            and hidden_size == 3072
+            and double_blocks == 5
+            and single_blocks == 20
+        ):
+            return FluxVariantType.Klein4B
+        if (
+            context_in_dim == 12288
+            and hidden_size == 4096
+            and double_blocks == 8
+            and single_blocks == 24
+        ):
+            return FluxVariantType.Klein9B
 
     # Because FLUX Dev and Schnell models have the same in_channels, we need to check for the presence of
     # certain keys to distinguish between them.
