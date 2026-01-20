@@ -320,12 +320,7 @@ def _get_flux_variant(state_dict: dict[str | int, Any]) -> FluxVariantType | Non
             single_block_index = 0
             while f"single_blocks.{single_block_index}.linear1.weight" in state_dict:
                 single_block_index += 1
-            if (
-                hidden_size == 4096
-                and context_in_dim == 12288
-                and double_block_index == 8
-                and single_block_index == 24
-            ):
+            if hidden_size == 4096 and context_in_dim == 12288 and double_block_index == 8 and single_block_index == 24:
                 return FluxVariantType.Klein9B
         return FluxVariantType.Schnell
 

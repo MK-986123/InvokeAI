@@ -39,12 +39,7 @@ class Fp8Linear(nn.Module):
         return x * self.input_scale.to(x.dtype)
 
     def _can_use_native_fp8(self, x: Tensor) -> bool:
-        return (
-            self.config.use_native_fp8
-            and x.is_cuda
-            and self.weight.is_cuda
-            and hasattr(torch, "float8_e4m3fn")
-        )
+        return self.config.use_native_fp8 and x.is_cuda and self.weight.is_cuda and hasattr(torch, "float8_e4m3fn")
 
     def _native_fp8_linear(self, x: Tensor) -> Tensor | None:
         if not hasattr(torch, "_scaled_mm"):
