@@ -110,4 +110,12 @@ def _is_expected_prefix(key: str) -> bool:
         "double_stream_modulation_",
         "single_stream_modulation.",
     )
-    return key.startswith(prefixes)
+    # Some checkpoints are saved in a "bundle" format where all FLUX weights are
+    # nested under the "model.diffusion_model." prefix. Normalize such keys so
+    # that we can reuse the same expected prefixes for both formats.
+    bundle_prefix = "model.diffusion_model."
+    if key.startswith(bundle_prefix):
+        normalized_key = key[len(bundle_prefix) :]
+    else:
+        normalized_key = key
+    return normalized_key.startswith(prefixes)
