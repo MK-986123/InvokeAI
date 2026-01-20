@@ -73,12 +73,14 @@ def _infer_dims(inventory: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         if head_dim != 0:
             num_heads = hidden_size // head_dim
 
+    # Count blocks using suffix matching to handle prefixed keys
+    # (e.g., "model.diffusion_model." or "diffusion_model." prefixes)
     double_blocks = 0
-    while f"double_blocks.{double_blocks}.img_attn.qkv.weight" in inventory:
+    while _find_key_by_suffix(keys, (f"double_blocks.{double_blocks}.img_attn.qkv.weight",)):
         double_blocks += 1
 
     single_blocks = 0
-    while f"single_blocks.{single_blocks}.linear1.weight" in inventory:
+    while _find_key_by_suffix(keys, (f"single_blocks.{single_blocks}.linear1.weight",)):
         single_blocks += 1
 
     return {
