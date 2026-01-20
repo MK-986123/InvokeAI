@@ -22,10 +22,12 @@ def audit_flux_safetensors(path: str | Path) -> FluxStateDictReport:
         keys = list(f.keys())
 
         def get_shape(key: str) -> tuple[int, ...] | None:
-            if key not in f.keys():
-                return None
-            tensor = f.get_tensor(key)
-            return tuple(tensor.shape)
+            """Get shape for a key, trying both unprefixed and prefixed variants."""
+            for variant in [key, f"model.diffusion_model.{key}"]:
+                if variant in f.keys():
+                    tensor = f.get_tensor(variant)
+                    return tuple(tensor.shape)
+            return None
 
         img_in_shape = get_shape("img_in.weight")
         txt_in_shape = get_shape("txt_in.weight")
@@ -46,16 +48,22 @@ def audit_flux_safetensors(path: str | Path) -> FluxStateDictReport:
             mlp_hidden_dim = mlp_single_shape[0] - (3 * hidden_size)
 
         double_blocks = 0
-        while f"double_blocks.{double_blocks}.img_attn.qkv.weight" in keys:
+        while (
+            f"double_blocks.{double_blocks}.img_attn.qkv.weight" in keys
+            or f"model.diffusion_model.double_blocks.{double_blocks}.img_attn.qkv.weight" in keys
+        ):
             double_blocks += 1
 
         single_blocks = 0
-        while f"single_blocks.{single_blocks}.linear1.weight" in keys:
+        while (
+            f"single_blocks.{single_blocks}.linear1.weight" in keys
+            or f"model.diffusion_model.single_blocks.{single_blocks}.linear1.weight" in keys
+        ):
             single_blocks += 1
 
         fp8_layers = _collect_fp8_layers(keys)
         required_keys = _required_flux_keys()
-        missing_keys = sorted([k for k in required_keys if k not in keys])
+        missing_keys = sorted([k for k in required_keys if k not in keys and f"model.diffusion_model.{k}" not in keys])
         unexpected_keys = sorted([k for k in keys if not _is_expected_prefix(k)])
 
     return FluxStateDictReport(
@@ -93,7 +101,11 @@ def _collect_fp8_layers(keys: list[str]) -> list[str]:
     fp8_bases: set[str] = set()
     for key in keys:
         if key.endswith((".input_scale", ".weight_scale")):
-            fp8_bases.add(key.rsplit(".", 1)[0])
+            base_key = key.rsplit(".", 1)[0]
+            # Normalize to unprefixed form for consistent reporting
+            if base_key.startswith("model.diffusion_model."):
+                base_key = base_key[len("model.diffusion_model.") :]
+            fp8_bases.add(base_key)
     return sorted(fp8_bases)
 
 
@@ -110,4 +122,10 @@ def _is_expected_prefix(key: str) -> bool:
         "double_stream_modulation_",
         "single_stream_modulation.",
     )
-    return key.startswith(prefixes)
+    # Check both unprefixed and prefixed variants
+    if key.startswith(prefixes):
+        return True
+    if key.startswith("model.diffusion_model."):
+        unprefixed_key = key[len("model.diffusion_model.") :]
+        return unprefixed_key.startswith(prefixes)
+    return False
