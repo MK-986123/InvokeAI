@@ -2,6 +2,7 @@
 """Class for Flux model loading in InvokeAI."""
 
 from pathlib import Path
+from typing import Iterable
 from typing import Optional
 
 import accelerate
@@ -32,6 +33,7 @@ from invokeai.backend.flux.ip_adapter.xlabs_ip_adapter_flux import (
 )
 from invokeai.backend.flux.model import Flux
 from invokeai.backend.flux.modules.autoencoder import AutoEncoder
+from invokeai.backend.flux.modules.fp8_linear import Fp8Linear
 from invokeai.backend.flux.redux.flux_redux_model import FluxReduxModel
 from invokeai.backend.flux.util import get_flux_ae_params, get_flux_transformers_params
 from invokeai.backend.model_manager.configs.base import Checkpoint_Config_Base
@@ -76,6 +78,65 @@ except ImportError:
     bnb_available = False
 
 app_config = get_config()
+
+
+def _fp8_dtypes() -> set[torch.dtype]:
+    dtypes: set[torch.dtype] = set()
+    if hasattr(torch, "float8_e4m3fn"):
+        dtypes.add(torch.float8_e4m3fn)
+    if hasattr(torch, "float8_e5m2"):
+        dtypes.add(torch.float8_e5m2)
+    return dtypes
+
+
+def _fp8_linear_prefixes(state_dict: dict[str, torch.Tensor]) -> Iterable[str]:
+    fp8_dtypes = _fp8_dtypes()
+    if not fp8_dtypes:
+        return []
+    prefixes: list[str] = []
+    for key, value in state_dict.items():
+        if not key.endswith(".weight"):
+            continue
+        if value.dtype not in fp8_dtypes:
+            continue
+        prefix = key[: -len(".weight")]
+        if f"{prefix}.input_scale" in state_dict and f"{prefix}.weight_scale" in state_dict:
+            prefixes.append(prefix)
+    return prefixes
+
+
+def _replace_fp8_linear_modules(model: torch.nn.Module, state_dict: dict[str, torch.Tensor]) -> None:
+    for prefix in _fp8_linear_prefixes(state_dict):
+        try:
+            module = model.get_submodule(prefix)
+        except AttributeError:
+            continue
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        replacement = Fp8Linear(
+            module.in_features,
+            module.out_features,
+            bias=module.bias is not None,
+            device=module.weight.device,
+        )
+        parent_path, _, child_name = prefix.rpartition(".")
+        parent = model.get_submodule(parent_path) if parent_path else model
+        parent.__setattr__(child_name, replacement)
+
+
+def _cast_flux_state_dict_for_inference(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    fp8_dtypes = _fp8_dtypes()
+    if not fp8_dtypes:
+        fp8_dtypes = set()
+    for key, value in state_dict.items():
+        if not value.is_floating_point():
+            continue
+        if value.dtype in fp8_dtypes:
+            continue
+        if key.endswith(".input_scale") or key.endswith(".weight_scale"):
+            continue
+        state_dict[key] = value.to(torch.bfloat16)
+    return state_dict
 
 
 @ModelLoaderRegistry.register(base=BaseModelType.Flux, type=ModelType.VAE, format=ModelFormat.Checkpoint)
@@ -243,11 +304,10 @@ class FluxCheckpointModel(ModelLoader):
         sd = load_file(model_path)
         if "model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale" in sd:
             sd = convert_bundle_to_flux_transformer_checkpoint(sd)
+        _replace_fp8_linear_modules(model, sd)
         new_sd_size = sum([ten.nelement() * torch.bfloat16.itemsize for ten in sd.values()])
         self._ram_cache.make_room(new_sd_size)
-        for k in sd.keys():
-            # We need to cast to bfloat16 due to it being the only currently supported dtype for inference
-            sd[k] = sd[k].to(torch.bfloat16)
+        sd = _cast_flux_state_dict_for_inference(sd)
         model.load_state_dict(sd, assign=True)
         return model
 
