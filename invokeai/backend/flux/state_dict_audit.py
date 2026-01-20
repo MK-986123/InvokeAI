@@ -6,6 +6,10 @@ from pathlib import Path
 from safetensors import safe_open
 
 
+# Prefix used in some FLUX checkpoints
+_FLUX_PREFIX = "model.diffusion_model."
+
+
 @dataclass
 class FluxStateDictReport:
     total_keys: int
@@ -16,15 +20,23 @@ class FluxStateDictReport:
     unexpected_keys: list[str]
 
 
+def _normalize_key(key: str) -> str:
+    """Remove the model.diffusion_model. prefix if present."""
+    if key.startswith(_FLUX_PREFIX):
+        return key[len(_FLUX_PREFIX) :]
+    return key
+
+
 def audit_flux_safetensors(path: str | Path) -> FluxStateDictReport:
     path = Path(path)
     with safe_open(path, framework="pt") as f:
         keys = list(f.keys())
+        keys_set = set(keys)
 
         def get_shape(key: str) -> tuple[int, ...] | None:
             """Get shape for a key, trying both unprefixed and prefixed variants."""
-            for variant in [key, f"model.diffusion_model.{key}"]:
-                if variant in f.keys():
+            for variant in [key, f"{_FLUX_PREFIX}{key}"]:
+                if variant in keys_set:
                     tensor = f.get_tensor(variant)
                     return tuple(tensor.shape)
             return None
@@ -49,21 +61,21 @@ def audit_flux_safetensors(path: str | Path) -> FluxStateDictReport:
 
         double_blocks = 0
         while (
-            f"double_blocks.{double_blocks}.img_attn.qkv.weight" in keys
-            or f"model.diffusion_model.double_blocks.{double_blocks}.img_attn.qkv.weight" in keys
+            f"double_blocks.{double_blocks}.img_attn.qkv.weight" in keys_set
+            or f"{_FLUX_PREFIX}double_blocks.{double_blocks}.img_attn.qkv.weight" in keys_set
         ):
             double_blocks += 1
 
         single_blocks = 0
         while (
-            f"single_blocks.{single_blocks}.linear1.weight" in keys
-            or f"model.diffusion_model.single_blocks.{single_blocks}.linear1.weight" in keys
+            f"single_blocks.{single_blocks}.linear1.weight" in keys_set
+            or f"{_FLUX_PREFIX}single_blocks.{single_blocks}.linear1.weight" in keys_set
         ):
             single_blocks += 1
 
         fp8_layers = _collect_fp8_layers(keys)
         required_keys = _required_flux_keys()
-        missing_keys = sorted([k for k in required_keys if k not in keys and f"model.diffusion_model.{k}" not in keys])
+        missing_keys = sorted([k for k in required_keys if k not in keys_set and f"{_FLUX_PREFIX}{k}" not in keys_set])
         unexpected_keys = sorted([k for k in keys if not _is_expected_prefix(k)])
 
     return FluxStateDictReport(
@@ -103,9 +115,7 @@ def _collect_fp8_layers(keys: list[str]) -> list[str]:
         if key.endswith((".input_scale", ".weight_scale")):
             base_key = key.rsplit(".", 1)[0]
             # Normalize to unprefixed form for consistent reporting
-            if base_key.startswith("model.diffusion_model."):
-                base_key = base_key[len("model.diffusion_model.") :]
-            fp8_bases.add(base_key)
+            fp8_bases.add(_normalize_key(base_key))
     return sorted(fp8_bases)
 
 
@@ -125,7 +135,6 @@ def _is_expected_prefix(key: str) -> bool:
     # Check both unprefixed and prefixed variants
     if key.startswith(prefixes):
         return True
-    if key.startswith("model.diffusion_model."):
-        unprefixed_key = key[len("model.diffusion_model.") :]
-        return unprefixed_key.startswith(prefixes)
+    if key.startswith(_FLUX_PREFIX):
+        return _normalize_key(key).startswith(prefixes)
     return False
