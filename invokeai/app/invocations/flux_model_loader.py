@@ -7,7 +7,14 @@ from invokeai.app.invocations.baseinvocation import (
     invocation_output,
 )
 from invokeai.app.invocations.fields import FieldDescriptions, Input, InputField, OutputField
-from invokeai.app.invocations.model import CLIPField, ModelIdentifierField, T5EncoderField, TransformerField, VAEField
+from invokeai.app.invocations.model import (
+    CLIPField,
+    ModelIdentifierField,
+    Qwen3EncoderField,
+    T5EncoderField,
+    TransformerField,
+    VAEField,
+)
 from invokeai.app.services.shared.invocation_context import InvocationContext
 from invokeai.app.util.t5_model_identifier import (
     preprocess_t5_encoder_model_identifier,
@@ -25,6 +32,11 @@ class FluxModelLoaderOutput(BaseInvocationOutput):
     transformer: TransformerField = OutputField(description=FieldDescriptions.transformer, title="Transformer")
     clip: CLIPField = OutputField(description=FieldDescriptions.clip, title="CLIP")
     t5_encoder: T5EncoderField = OutputField(description=FieldDescriptions.t5_encoder, title="T5 Encoder")
+    qwen3_encoder: Qwen3EncoderField | None = OutputField(
+        default=None,
+        description=FieldDescriptions.qwen3_encoder,
+        title="Qwen3 Encoder",
+    )
     vae: VAEField = OutputField(description=FieldDescriptions.vae, title="VAE")
     max_seq_len: Literal[256, 512] = OutputField(
         description="The max sequence length to used for the T5 encoder. (256 for schnell transformer, 512 for dev transformer)",
@@ -62,6 +74,13 @@ class FluxModelLoaderInvocation(BaseInvocation):
         title="CLIP Embed",
         ui_model_type=ModelType.CLIPEmbed,
     )
+    qwen3_encoder_model: ModelIdentifierField | None = InputField(
+        default=None,
+        description=FieldDescriptions.qwen3_encoder,
+        input=Input.Direct,
+        title="Qwen3 Encoder",
+        ui_model_type=ModelType.Qwen3Encoder,
+    )
 
     vae_model: ModelIdentifierField = InputField(
         description=FieldDescriptions.vae_model,
@@ -74,6 +93,8 @@ class FluxModelLoaderInvocation(BaseInvocation):
         for key in [self.model.key, self.t5_encoder_model.key, self.clip_embed_model.key, self.vae_model.key]:
             if not context.models.exists(key):
                 raise ValueError(f"Unknown model: {key}")
+        if self.qwen3_encoder_model is not None and not context.models.exists(self.qwen3_encoder_model.key):
+            raise ValueError(f"Unknown model: {self.qwen3_encoder_model.key}")
 
         transformer = self.model.model_copy(update={"submodel_type": SubModelType.Transformer})
         vae = self.vae_model.model_copy(update={"submodel_type": SubModelType.VAE})
@@ -87,10 +108,19 @@ class FluxModelLoaderInvocation(BaseInvocation):
         transformer_config = context.models.get_config(transformer)
         assert isinstance(transformer_config, Checkpoint_Config_Base)
 
+        qwen3_encoder: Qwen3EncoderField | None = None
+        if self.qwen3_encoder_model is not None:
+            qwen3_tokenizer = self.qwen3_encoder_model.model_copy(update={"submodel_type": SubModelType.Tokenizer})
+            qwen3_text_encoder = self.qwen3_encoder_model.model_copy(
+                update={"submodel_type": SubModelType.TextEncoder}
+            )
+            qwen3_encoder = Qwen3EncoderField(tokenizer=qwen3_tokenizer, text_encoder=qwen3_text_encoder)
+
         return FluxModelLoaderOutput(
             transformer=TransformerField(transformer=transformer, loras=[]),
             clip=CLIPField(tokenizer=tokenizer, text_encoder=clip_encoder, loras=[], skipped_layers=0),
             t5_encoder=T5EncoderField(tokenizer=tokenizer2, text_encoder=t5_encoder, loras=[]),
+            qwen3_encoder=qwen3_encoder,
             vae=VAEField(vae=vae),
             max_seq_len=get_flux_max_seq_length(transformer_config.variant),
         )

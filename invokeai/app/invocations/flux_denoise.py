@@ -467,6 +467,8 @@ class FluxDenoiseInvocation(BaseInvocation):
             assert isinstance(flux_conditioning, FLUXConditioningInfo)
             flux_conditioning = flux_conditioning.to(dtype=dtype, device=device)
             t5_embeddings = flux_conditioning.t5_embeds
+            qwen3_embeddings = flux_conditioning.qwen3_embeds
+            qwen3_txt_ids = flux_conditioning.qwen3_txt_ids
             clip_embeddings = flux_conditioning.clip_embeds
 
             # Load the mask, if provided.
@@ -478,7 +480,18 @@ class FluxDenoiseInvocation(BaseInvocation):
                     mask, packed_height, packed_width, dtype, device
                 )
 
-            text_conditionings.append(FluxTextConditioning(t5_embeddings, clip_embeddings, mask))
+            if t5_embeddings is None and qwen3_embeddings is None:
+                raise ValueError("FLUX conditioning is missing text embeddings.")
+
+            text_conditionings.append(
+                FluxTextConditioning(
+                    t5_embeddings=t5_embeddings,
+                    qwen3_embeddings=qwen3_embeddings,
+                    qwen3_txt_ids=qwen3_txt_ids,
+                    clip_embeddings=clip_embeddings,
+                    mask=mask,
+                )
+            )
 
         return text_conditionings
 

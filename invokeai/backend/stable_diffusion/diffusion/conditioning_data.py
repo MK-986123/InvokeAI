@@ -41,11 +41,18 @@ class SDXLConditioningInfo(BasicConditioningInfo):
 @dataclass
 class FLUXConditioningInfo:
     clip_embeds: torch.Tensor
-    t5_embeds: torch.Tensor
+    t5_embeds: torch.Tensor | None = None
+    qwen3_embeds: torch.Tensor | None = None
+    qwen3_txt_ids: torch.Tensor | None = None
 
     def to(self, device: torch.device | None = None, dtype: torch.dtype | None = None):
         self.clip_embeds = self.clip_embeds.to(device=device, dtype=dtype)
-        self.t5_embeds = self.t5_embeds.to(device=device, dtype=dtype)
+        if self.t5_embeds is not None:
+            self.t5_embeds = self.t5_embeds.to(device=device, dtype=dtype)
+        if self.qwen3_embeds is not None:
+            self.qwen3_embeds = self.qwen3_embeds.to(device=device, dtype=dtype)
+        if self.qwen3_txt_ids is not None:
+            self.qwen3_txt_ids = self.qwen3_txt_ids.to(device=device, dtype=dtype)
         return self
 
 

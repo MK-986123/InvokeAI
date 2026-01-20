@@ -7,7 +7,9 @@ from invokeai.backend.stable_diffusion.diffusion.conditioning_data import Range
 
 @dataclass
 class FluxTextConditioning:
-    t5_embeddings: torch.Tensor
+    t5_embeddings: torch.Tensor | None
+    qwen3_embeddings: torch.Tensor | None
+    qwen3_txt_ids: torch.Tensor | None
     clip_embeddings: torch.Tensor
     # If mask is None, the prompt is a global prompt.
     mask: torch.Tensor | None
@@ -24,9 +26,11 @@ class FluxReduxConditioning:
 class FluxRegionalTextConditioning:
     # Concatenated text embeddings.
     # Shape: (1, concatenated_txt_seq_len, 4096)
-    t5_embeddings: torch.Tensor
+    t5_embeddings: torch.Tensor | None
+    qwen3_embeddings: torch.Tensor | None
     # Shape: (1, concatenated_txt_seq_len, 3)
-    t5_txt_ids: torch.Tensor
+    t5_txt_ids: torch.Tensor | None
+    qwen3_txt_ids: torch.Tensor | None
 
     # Global CLIP embeddings.
     # Shape: (1, 768)
@@ -41,3 +45,15 @@ class FluxRegionalTextConditioning:
     # List of ranges that represent the embedding ranges for each mask.
     # t5_embedding_ranges[i] contains the range of the t5 embeddings that correspond to image_masks[i].
     t5_embedding_ranges: list[Range]
+
+    def active_text_embeddings(self) -> torch.Tensor:
+        if self.qwen3_embeddings is not None:
+            return self.qwen3_embeddings
+        assert self.t5_embeddings is not None
+        return self.t5_embeddings
+
+    def active_txt_ids(self) -> torch.Tensor:
+        if self.qwen3_txt_ids is not None:
+            return self.qwen3_txt_ids
+        assert self.t5_txt_ids is not None
+        return self.t5_txt_ids

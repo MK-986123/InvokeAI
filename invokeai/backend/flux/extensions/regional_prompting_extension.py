@@ -140,8 +140,8 @@ class RegionalPromptingExtension:
 
         device = TorchDevice.choose_torch_device()
 
-        # Infer txt_seq_len from the t5_embeddings tensor.
-        txt_seq_len = regional_text_conditioning.t5_embeddings.shape[1]
+        # Infer txt_seq_len from the active text embeddings tensor.
+        txt_seq_len = regional_text_conditioning.active_text_embeddings().shape[1]
 
         # In the attention blocks, the txt seq and img seq are concatenated and then attention is applied.
         # Concatenation happens in the following order: [txt_seq, img_seq].
@@ -214,9 +214,20 @@ class RegionalPromptingExtension:
         redux_conditionings: list[FluxReduxConditioning],
     ) -> FluxRegionalTextConditioning:
         """Concatenate regional text conditioning data into a single conditioning tensor (with associated masks)."""
-        concat_t5_embeddings: list[torch.Tensor] = []
-        concat_t5_embedding_ranges: list[Range] = []
+        concat_text_embeddings: list[torch.Tensor] = []
+        concat_text_embedding_ranges: list[Range] = []
+        concat_txt_ids: list[torch.Tensor] = []
         image_masks: list[torch.Tensor | None] = []
+
+        uses_qwen3 = any(text_conditioning.qwen3_embeddings is not None for text_conditioning in text_conditionings)
+        if uses_qwen3:
+            for text_conditioning in text_conditionings:
+                if text_conditioning.qwen3_embeddings is None:
+                    raise ValueError("Mixed FLUX text conditioning types detected. Expected Qwen3 embeddings.")
+        else:
+            for text_conditioning in text_conditionings:
+                if text_conditioning.t5_embeddings is None:
+                    raise ValueError("Missing T5 embeddings for FLUX text conditioning.")
 
         # Choose global CLIP embedding.
         # Use the first global prompt's CLIP embedding as the global CLIP embedding. If there is no global prompt, use
@@ -227,42 +238,83 @@ class RegionalPromptingExtension:
                 global_clip_embedding = text_conditioning.clip_embeddings
                 break
 
-        # Handle T5 text embeddings.
-        cur_t5_embedding_len = 0
+        # Handle text embeddings.
+        cur_text_embedding_len = 0
         for text_conditioning in text_conditionings:
-            concat_t5_embeddings.append(text_conditioning.t5_embeddings)
-            concat_t5_embedding_ranges.append(
-                Range(start=cur_t5_embedding_len, end=cur_t5_embedding_len + text_conditioning.t5_embeddings.shape[1])
+            embeddings = (
+                text_conditioning.qwen3_embeddings if uses_qwen3 else text_conditioning.t5_embeddings
+            )
+            assert embeddings is not None
+            concat_text_embeddings.append(embeddings)
+            concat_text_embedding_ranges.append(
+                Range(start=cur_text_embedding_len, end=cur_text_embedding_len + embeddings.shape[1])
             )
             image_masks.append(text_conditioning.mask)
-            cur_t5_embedding_len += text_conditioning.t5_embeddings.shape[1]
+            if uses_qwen3:
+                txt_ids = text_conditioning.qwen3_txt_ids
+                if txt_ids is None:
+                    txt_ids = cls._build_qwen3_txt_ids(
+                        embeddings.shape[1], cur_text_embedding_len, embeddings.device, embeddings.dtype
+                    )
+                else:
+                    txt_ids = txt_ids.clone()
+                    txt_ids[..., 0] += cur_text_embedding_len
+                concat_txt_ids.append(txt_ids)
+            cur_text_embedding_len += embeddings.shape[1]
 
         # Handle Redux embeddings.
         for redux_conditioning in redux_conditionings:
-            concat_t5_embeddings.append(redux_conditioning.redux_embeddings)
-            concat_t5_embedding_ranges.append(
+            concat_text_embeddings.append(redux_conditioning.redux_embeddings)
+            concat_text_embedding_ranges.append(
                 Range(
-                    start=cur_t5_embedding_len, end=cur_t5_embedding_len + redux_conditioning.redux_embeddings.shape[1]
+                    start=cur_text_embedding_len,
+                    end=cur_text_embedding_len + redux_conditioning.redux_embeddings.shape[1],
                 )
             )
             image_masks.append(redux_conditioning.mask)
-            cur_t5_embedding_len += redux_conditioning.redux_embeddings.shape[1]
+            if uses_qwen3:
+                concat_txt_ids.append(
+                    cls._build_qwen3_txt_ids(
+                        redux_conditioning.redux_embeddings.shape[1],
+                        cur_text_embedding_len,
+                        redux_conditioning.redux_embeddings.device,
+                        redux_conditioning.redux_embeddings.dtype,
+                    )
+                )
+            cur_text_embedding_len += redux_conditioning.redux_embeddings.shape[1]
 
-        t5_embeddings = torch.cat(concat_t5_embeddings, dim=1)
+        text_embeddings = torch.cat(concat_text_embeddings, dim=1)
 
         # Initialize the txt_ids tensor.
-        pos_bs, pos_t5_seq_len, _ = t5_embeddings.shape
-        t5_txt_ids = torch.zeros(
-            pos_bs, pos_t5_seq_len, 3, dtype=t5_embeddings.dtype, device=TorchDevice.choose_torch_device()
-        )
+        if uses_qwen3:
+            txt_ids = torch.cat(concat_txt_ids, dim=1)
+            t5_txt_ids = None
+            qwen3_txt_ids = txt_ids
+        else:
+            pos_bs, pos_t5_seq_len, _ = text_embeddings.shape
+            t5_txt_ids = torch.zeros(
+                pos_bs, pos_t5_seq_len, 3, dtype=text_embeddings.dtype, device=TorchDevice.choose_torch_device()
+            )
+            qwen3_txt_ids = None
 
         return FluxRegionalTextConditioning(
-            t5_embeddings=t5_embeddings,
+            t5_embeddings=text_embeddings if not uses_qwen3 else None,
+            qwen3_embeddings=text_embeddings if uses_qwen3 else None,
             clip_embeddings=global_clip_embedding,
             t5_txt_ids=t5_txt_ids,
+            qwen3_txt_ids=qwen3_txt_ids,
             image_masks=image_masks,
-            t5_embedding_ranges=concat_t5_embedding_ranges,
+            t5_embedding_ranges=concat_text_embedding_ranges,
         )
+
+    @staticmethod
+    def _build_qwen3_txt_ids(
+        seq_len: int, offset: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        txt_ids = torch.zeros((1, seq_len, 3), device=device, dtype=dtype)
+        positions = torch.arange(seq_len, device=device, dtype=dtype)
+        txt_ids[..., 0] = positions + offset
+        return txt_ids
 
     @staticmethod
     def preprocess_regional_prompt_mask(
