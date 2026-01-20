@@ -332,7 +332,12 @@ def _get_flux_variant(state_dict: dict[str | int, Any]) -> FluxVariantType | Non
                 and double_block_index == 8
                 and single_block_index == 24
             ):
-                return FluxVariantType.Klein9B
+                # NOTE: Klein variants are not yet supported by all loaders
+                # (e.g. GGUF and BNB-NF4 rely on get_flux_transformers_params,
+                # which currently lacks Klein-specific params). To avoid
+                # runtime failures, treat Klein-like models as Schnell until
+                # full Klein support is implemented.
+                return FluxVariantType.Schnell
         return FluxVariantType.Schnell
 
 
