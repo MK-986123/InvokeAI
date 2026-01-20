@@ -35,6 +35,9 @@ from invokeai.backend.stable_diffusion.schedulers.schedulers import SCHEDULER_NA
 
 DEFAULTS_PRECISION = Literal["fp16", "fp32"]
 
+# Klein FP8 models use in_channels=64, while quantized models (BNB-NF4) use in_channels=1
+KLEIN_FP8_IN_CHANNELS = 64
+
 
 class MainModelDefaultSettings(BaseModel):
     vae: str | None = Field(default=None, description="Default VAE for this model (model key)")
@@ -336,8 +339,8 @@ def _get_flux_variant(state_dict: dict[str | int, Any]) -> FluxVariantType | Non
                 # (e.g. GGUF and BNB-NF4 rely on get_flux_transformers_params,
                 # which currently lacks Klein-specific params). To avoid
                 # runtime failures, treat Klein-like models as Schnell for
-                # quantized formats. Klein models use in_channels=64 for FP8.
-                if in_channels != 64:
+                # quantized formats. Klein models use KLEIN_FP8_IN_CHANNELS.
+                if in_channels != KLEIN_FP8_IN_CHANNELS:
                     return FluxVariantType.Schnell
                 return FluxVariantType.Klein9B
         return FluxVariantType.Schnell

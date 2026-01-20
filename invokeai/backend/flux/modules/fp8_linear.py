@@ -69,6 +69,7 @@ class Fp8Linear(nn.Module):
             if out is not None:
                 return out
         target_dtype = self.config.dequantize_dtype or x.dtype
+        # Only perform conversions if dtype differs to avoid unnecessary overhead
         scaled_x = self._scale_input(x)
         if scaled_x.dtype != target_dtype:
             scaled_x = scaled_x.to(target_dtype)
@@ -76,6 +77,7 @@ class Fp8Linear(nn.Module):
         if bias is not None and bias.dtype != target_dtype:
             bias = bias.to(target_dtype)
         out = F.linear(scaled_x, self._dequantize_weight(target_dtype), bias)
+        # Convert output back to input dtype if needed
         if target_dtype != x.dtype:
             out = out.to(x.dtype)
         return out
