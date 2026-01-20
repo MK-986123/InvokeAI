@@ -315,10 +315,16 @@ def _get_flux_variant(state_dict: dict[str | int, Any]) -> FluxVariantType | Non
             hidden_size = img_in.shape[0]
             context_in_dim = txt_in.shape[1]
             double_block_index = 0
-            while f"double_blocks.{double_block_index}.img_attn.qkv.weight" in state_dict:
+            while (
+                f"double_blocks.{double_block_index}.img_attn.qkv.weight" in state_dict
+                or f"model.diffusion_model.double_blocks.{double_block_index}.img_attn.qkv.weight" in state_dict
+            ):
                 double_block_index += 1
             single_block_index = 0
-            while f"single_blocks.{single_block_index}.linear1.weight" in state_dict:
+            while (
+                f"single_blocks.{single_block_index}.linear1.weight" in state_dict
+                or f"model.diffusion_model.single_blocks.{single_block_index}.linear1.weight" in state_dict
+            ):
                 single_block_index += 1
             if (
                 hidden_size == 4096
