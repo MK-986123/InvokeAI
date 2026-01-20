@@ -23,8 +23,13 @@ class FluxStateDictReport:
 def _normalize_key(key: str) -> str:
     """Remove the model.diffusion_model. prefix if present."""
     if key.startswith(_FLUX_PREFIX):
-        return key[len(_FLUX_PREFIX) :]
+        return key[len(_FLUX_PREFIX):]
     return key
+
+
+def _has_key(base_key: str, keys_set: set[str]) -> bool:
+    """Check if a key exists in either unprefixed or prefixed form."""
+    return base_key in keys_set or f"{_FLUX_PREFIX}{base_key}" in keys_set
 
 
 def audit_flux_safetensors(path: str | Path) -> FluxStateDictReport:
@@ -60,22 +65,16 @@ def audit_flux_safetensors(path: str | Path) -> FluxStateDictReport:
             mlp_hidden_dim = mlp_single_shape[0] - (3 * hidden_size)
 
         double_blocks = 0
-        while (
-            f"double_blocks.{double_blocks}.img_attn.qkv.weight" in keys_set
-            or f"{_FLUX_PREFIX}double_blocks.{double_blocks}.img_attn.qkv.weight" in keys_set
-        ):
+        while _has_key(f"double_blocks.{double_blocks}.img_attn.qkv.weight", keys_set):
             double_blocks += 1
 
         single_blocks = 0
-        while (
-            f"single_blocks.{single_blocks}.linear1.weight" in keys_set
-            or f"{_FLUX_PREFIX}single_blocks.{single_blocks}.linear1.weight" in keys_set
-        ):
+        while _has_key(f"single_blocks.{single_blocks}.linear1.weight", keys_set):
             single_blocks += 1
 
         fp8_layers = _collect_fp8_layers(keys)
         required_keys = _required_flux_keys()
-        missing_keys = sorted([k for k in required_keys if k not in keys_set and f"{_FLUX_PREFIX}{k}" not in keys_set])
+        missing_keys = sorted([k for k in required_keys if not _has_key(k, keys_set)])
         unexpected_keys = sorted([k for k in keys if not _is_expected_prefix(k)])
 
     return FluxStateDictReport(
