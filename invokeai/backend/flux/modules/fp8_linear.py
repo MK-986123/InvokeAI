@@ -69,7 +69,16 @@ class Fp8Linear(nn.Module):
             if out is not None:
                 return out
         target_dtype = self.config.dequantize_dtype or x.dtype
-        return F.linear(self._scale_input(x), self._dequantize_weight(target_dtype), self.bias)
+        scaled_x = self._scale_input(x)
+        if scaled_x.dtype is not target_dtype:
+            scaled_x = scaled_x.to(target_dtype)
+        bias = self.bias
+        if bias is not None and bias.dtype is not target_dtype:
+            bias = bias.to(target_dtype)
+        out = F.linear(scaled_x, self._dequantize_weight(target_dtype), bias)
+        if target_dtype is not x.dtype:
+            out = out.to(x.dtype)
+        return out
 
 
 def apply_fp8_linear_from_state_dict(model: nn.Module, state_dict: dict[str, Tensor]) -> None:
