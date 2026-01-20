@@ -57,7 +57,7 @@ class Fp8Linear(nn.Module):
                 self.weight_scale,
                 out_dtype=x.dtype,
             )
-        except Exception:
+        except RuntimeError:
             return None
         if self.bias is not None:
             out = out + self.bias.to(out.dtype)
