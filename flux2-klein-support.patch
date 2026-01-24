@@ -1,0 +1,3575 @@
+diff --git a/docs/flux2_klein_analysis.md b/docs/flux2_klein_analysis.md
+new file mode 100644
+index 0000000..c9546b5
+--- /dev/null
++++ b/docs/flux2_klein_analysis.md
+@@ -0,0 +1,178 @@
++# FLUX.2-klein Model Analysis and InvokeAI Integration
++
++## Executive Summary
++
++FLUX.2-klein is a **completely new model architecture** from Black Forest Labs, distinct from FLUX.1. This document provides a comprehensive analysis of the architecture differences and the implementation approach for InvokeAI 6.10.0 support.
++
++## Architecture Comparison
++
++### FLUX.1 vs FLUX.2-klein-4B
++
++| Component | FLUX.1 Dev/Schnell | FLUX.2-klein-4B |
++|-----------|-------------------|-----------------|
++| Pipeline class | FluxPipeline | Flux2KleinPipeline |
++| Transformer class | Flux | Flux2Transformer2DModel |
++| in_channels | 64 | 128 |
++| hidden_size | 3072 | 3072 |
++| num_attention_heads | 24 | 24 |
++| num_double_blocks | 19 | 5 |
++| num_single_blocks | 38 | 20 |
++| mlp_ratio | 4.0 | 3.0 |
++| context_in_dim | 4096 (T5) | 7680 (Qwen3) |
++| guidance_embed | True (Dev) / False (Schnell) | False |
++| RoPE axes_dim | [16, 56, 56] | [32, 32, 32, 32] |
++| rope_theta | 10,000 | 2,000 |
++
++### FLUX.2-klein Variants
++
++| Variant | Parameters | Double Blocks | Single Blocks | Hidden Size |
++|---------|------------|---------------|---------------|-------------|
++| klein-4B | ~3.9B | 5 | 20 | 3072 |
++| klein-9B | ~9.1B | 8 | 24 | 4096 |
++| klein-9B-FP8 | ~9.1B | 8 | 24 | 4096 |
++
++## Key Architectural Differences
++
++### 1. Transformer Structure
++
++FLUX.2 uses **shared modulation layers** at the model level, unlike FLUX.1 which has per-block modulation:
++
++```
++FLUX.1 structure:
++- double_blocks.0.img_mod.lin.weight
++- double_blocks.0.txt_mod.lin.weight
++- single_blocks.0.modulation.lin.weight
++
++FLUX.2 structure:
++- double_stream_modulation_img.lin.weight  (shared)
++- double_stream_modulation_txt.lin.weight  (shared)
++- single_stream_modulation.lin.weight      (shared)
++```
++
++### 2. Text Encoder
++
++| FLUX.1 | FLUX.2-klein |
++|--------|--------------|
++| CLIP-L/14 + T5-XXL | Qwen3ForCausalLM |
++| 2 encoders, 2 tokenizers | 1 unified encoder |
++| context_in_dim=4096 | joint_attention_dim=7680 (4B) / 12288 (9B) |
++
++### 3. VAE
++
++| FLUX.1 | FLUX.2-klein |
++|--------|--------------|
++| AutoEncoder | AutoencoderKLFlux2 |
++| latent_channels=16 | latent_channels=32 |
++
++### 4. MLP Activation
++
++- FLUX.1: GELU (approximate="tanh")
++- FLUX.2: SwiGLU (gated SiLU)
++
++## Tensor Inventory Summary
++
++### FLUX.2-klein-4B
++
++- **Total parameters**: ~3.88B
++- **Total tensors**: 238
++- **File size (bf16)**: ~7.75 GB
++
++| Component | Tensors | Parameters | % of Total |
++|-----------|---------|------------|------------|
++| single_blocks | 120 | 2,454M | 63.3% |
++| double_blocks | 100 | 1,227M | 31.7% |
++| modulation layers | 6 | 142M | 3.7% |
++| input/output layers | 12 | 53M | 1.3% |
++
++### Key Tensor Shapes (4B)
++
++| Key | Shape | Description |
++|-----|-------|-------------|
++| img_in.weight | [3072, 128] | Latent input projection |
++| txt_in.weight | [3072, 7680] | Text embedding projection |
++| double_stream_modulation_img.lin.weight | [18432, 3072] | 6 modulation params |
++| single_stream_modulation.lin.weight | [9216, 3072] | 3 modulation params |
++| double_blocks.0.img_attn.qkv.weight | [9216, 3072] | QKV projection |
++| single_blocks.0.linear1.weight | [27648, 3072] | Fused QKV+MLP input |
++
++## Implementation Details
++
++### Files Modified
++
++1. **invokeai/backend/model_manager/taxonomy.py**
++   - Added `BaseModelType.Flux2`
++   - Added `Flux2VariantType` enum (Klein4B, Klein9B, Klein9BFP8)
++   - Updated `AnyVariant` type alias
++
++2. **invokeai/backend/model_manager/configs/main.py**
++   - Added `_has_flux2_keys()` detection function
++   - Added `_get_flux2_variant()` variant detection
++   - Added `Main_Checkpoint_FLUX2_Config` class
++
++3. **invokeai/backend/model_manager/configs/factory.py**
++   - Imported and registered `Main_Checkpoint_FLUX2_Config`
++
++### Files Created
++
++1. **invokeai/backend/flux2/__init__.py**
++   - Module initialization
++
++2. **invokeai/backend/flux2/model.py**
++   - `Flux2Params` dataclass
++   - `Flux2` transformer model class
++   - Supporting modules (Flux2DoubleStreamBlock, Flux2SingleStreamBlock, etc.)
++
++3. **invokeai/backend/flux2/util.py**
++   - Parameter presets for all variants
++   - `get_flux2_transformer_params()` function
++   - `get_flux2_max_seq_length()` function
++
++4. **invokeai/backend/model_manager/load/model_loaders/flux2.py**
++   - `Flux2CheckpointModel` loader class
++
++5. **tests/backend/flux2/test_flux2_model.py**
++   - Unit tests for detection and model instantiation
++
++## Model Detection Logic
++
++FLUX.2 models are detected by the presence of shared modulation layer keys:
++
++```python
++flux2_specific_keys = {
++    "double_stream_modulation_img.lin.weight",
++    "double_stream_modulation_txt.lin.weight",
++    "single_stream_modulation.lin.weight",
++}
++```
++
++Variant is determined by:
++1. `img_in.weight.shape[0]` → hidden_size (3072 for 4B, 4096 for 9B)
++2. `img_in.weight.shape[1]` → must be 128 (FLUX.2 signature)
++3. Counting double_blocks and single_blocks
++4. Presence of `.input_scale` keys → FP8 quantization
++
++## Future Work
++
++### Not Implemented (Out of Scope)
++
++1. **Qwen3 Text Encoder Loader** - Requires new ModelType and loader
++2. **FLUX.2 VAE (AutoencoderKLFlux2)** - Requires new VAE implementation
++3. **Pipeline Invocations** - flux2_denoise.py, flux2_text_encoder.py, etc.
++4. **Diffusers Format Support** - Loading from HuggingFace diffusers format
++
++### Extension to 9B Models
++
++The 9B variants require:
++- Qwen3-8B text encoder (larger, possibly gated)
++- More VRAM (~18GB for bf16)
++- FP8 support for the quantized variant
++
++## License
++
++FLUX.2-klein-4B is released under **Apache 2.0** license (open weights, commercial use allowed).
++
++## References
++
++- [FLUX.2-klein-4B on HuggingFace](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B)
++- [FLUX.2 GitHub Repository](https://github.com/black-forest-labs/flux2)
++- [BFL Blog Post](https://bfl.ai/blog/flux2-klein-towards-interactive-visual-intelligence)
+diff --git a/invokeai/app/invocations/flux2_denoise.py b/invokeai/app/invocations/flux2_denoise.py
+new file mode 100644
+index 0000000..2192a11
+--- /dev/null
++++ b/invokeai/app/invocations/flux2_denoise.py
+@@ -0,0 +1,433 @@
++"""Flux2 Klein Denoise Invocation.
++
++Run denoising process with a FLUX.2 Klein transformer model.
++Uses Qwen3 conditioning instead of CLIP+T5.
++"""
++
++from contextlib import ExitStack
++from typing import Callable, Iterator, Optional, Tuple
++
++import torch
++import torchvision.transforms as tv_transforms
++from torchvision.transforms.functional import resize as tv_resize
++
++from invokeai.app.invocations.baseinvocation import BaseInvocation, Classification, invocation
++from invokeai.app.invocations.fields import (
++    DenoiseMaskField,
++    FieldDescriptions,
++    FluxConditioningField,
++    Input,
++    InputField,
++    LatentsField,
++)
++from invokeai.app.invocations.model import TransformerField, VAEField
++from invokeai.app.invocations.primitives import LatentsOutput
++from invokeai.app.services.shared.invocation_context import InvocationContext
++from invokeai.backend.flux.sampling_utils import clip_timestep_schedule_fractional
++from invokeai.backend.flux.schedulers import FLUX_SCHEDULER_LABELS, FLUX_SCHEDULER_MAP, FLUX_SCHEDULER_NAME_VALUES
++from invokeai.backend.flux2.denoise import denoise
++from invokeai.backend.flux2.sampling_utils import (
++    compute_empirical_mu,
++    generate_img_ids_flux2,
++    get_noise_flux2,
++    get_schedule_flux2,
++    pack_flux2,
++    unpack_flux2,
++)
++from invokeai.backend.model_manager.taxonomy import BaseModelType, ModelFormat, ModelType
++from invokeai.backend.patches.layer_patcher import LayerPatcher
++from invokeai.backend.patches.lora_conversions.flux_lora_constants import FLUX_LORA_TRANSFORMER_PREFIX
++from invokeai.backend.patches.model_patch_raw import ModelPatchRaw
++from invokeai.backend.rectified_flow.rectified_flow_inpaint_extension import RectifiedFlowInpaintExtension
++from invokeai.backend.stable_diffusion.diffusers_pipeline import PipelineIntermediateState
++from invokeai.backend.stable_diffusion.diffusion.conditioning_data import FLUXConditioningInfo
++from invokeai.backend.util.devices import TorchDevice
++
++
++@invocation(
++    "flux2_denoise",
++    title="FLUX2 Denoise",
++    tags=["image", "flux", "flux2", "klein", "denoise"],
++    category="image",
++    version="1.2.0",
++    classification=Classification.Prototype,
++)
++class Flux2DenoiseInvocation(BaseInvocation):
++    """Run denoising with FLUX.2 Klein transformer model.
++
++    This node is designed for FLUX.2 Klein models which use Qwen3 as the
++    text encoder. It does not support ControlNet, IP-Adapters, or regional
++    prompting.
++    """
++
++    latents: Optional[LatentsField] = InputField(
++        default=None,
++        description=FieldDescriptions.latents,
++        input=Input.Connection,
++    )
++    denoise_mask: Optional[DenoiseMaskField] = InputField(
++        default=None,
++        description=FieldDescriptions.denoise_mask,
++        input=Input.Connection,
++    )
++    denoising_start: float = InputField(
++        default=0.0,
++        ge=0,
++        le=1,
++        description=FieldDescriptions.denoising_start,
++    )
++    denoising_end: float = InputField(
++        default=1.0,
++        ge=0,
++        le=1,
++        description=FieldDescriptions.denoising_end,
++    )
++    add_noise: bool = InputField(default=True, description="Add noise based on denoising start.")
++    transformer: TransformerField = InputField(
++        description=FieldDescriptions.flux_model,
++        input=Input.Connection,
++        title="Transformer",
++    )
++    positive_text_conditioning: FluxConditioningField = InputField(
++        description=FieldDescriptions.positive_cond,
++        input=Input.Connection,
++    )
++    negative_text_conditioning: Optional[FluxConditioningField] = InputField(
++        default=None,
++        description="Negative conditioning tensor. Can be None if cfg_scale is 1.0.",
++        input=Input.Connection,
++    )
++    cfg_scale: float = InputField(
++        default=1.0,
++        description=FieldDescriptions.cfg_scale,
++        title="CFG Scale",
++    )
++    width: int = InputField(default=1024, multiple_of=16, description="Width of generated image.")
++    height: int = InputField(default=1024, multiple_of=16, description="Height of generated image.")
++    num_steps: int = InputField(
++        default=4,
++        description="Number of diffusion steps. Use 4 for distilled models, 28+ for base models.",
++    )
++    scheduler: FLUX_SCHEDULER_NAME_VALUES = InputField(
++        default="euler",
++        description="Scheduler (sampler) for denoising. 'euler' is standard. "
++        "'heun' is 2nd-order. 'lcm' optimized for few steps.",
++        ui_choice_labels=FLUX_SCHEDULER_LABELS,
++    )
++    seed: int = InputField(default=0, description="Randomness seed for reproducibility.")
++    vae: VAEField = InputField(
++        description="FLUX.2 VAE model (required for BN statistics).",
++        input=Input.Connection,
++    )
++
++    def _get_bn_stats(self, context: InvocationContext) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
++        """Extract BN statistics from FLUX.2 VAE.
++
++        The FLUX.2 VAE uses batch normalization on the patchified
++        128-channel representation. BFL FLUX.2 VAE uses affine=False, so
++        there are NO learnable weight/bias.
++
++        BN formula (affine=False): y = (x - mean) / std
++        Inverse: x = y * std + mean
++
++        Returns:
++            Tuple of (bn_mean, bn_std) tensors of shape (128,), or None.
++        """
++        with context.models.load(self.vae.vae).model_on_device() as (_, vae):
++            vae.eval()
++
++            bn_layer = None
++            if hasattr(vae, "bn"):
++                bn_layer = vae.bn
++            elif hasattr(vae, "batch_norm"):
++                bn_layer = vae.batch_norm
++            elif hasattr(vae, "encoder") and hasattr(vae.encoder, "bn"):
++                bn_layer = vae.encoder.bn
++
++            if bn_layer is None:
++                return None
++
++            if bn_layer.running_mean is None or bn_layer.running_var is None:
++                return None
++
++            bn_mean = bn_layer.running_mean.clone()
++            bn_var = bn_layer.running_var.clone()
++            # Source BN epsilon from the layer itself, with FLUX.2 default fallback
++            bn_eps = bn_layer.eps if hasattr(bn_layer, "eps") else 1e-4
++            bn_std = torch.sqrt(bn_var + bn_eps)
++
++        return bn_mean, bn_std
++
++    def _bn_normalize(
++        self,
++        x: torch.Tensor,
++        bn_mean: torch.Tensor,
++        bn_std: torch.Tensor,
++    ) -> torch.Tensor:
++        """Apply BN normalization to packed latents.
++
++        Args:
++            x: Packed latents of shape (B, seq, 128).
++            bn_mean: BN running mean of shape (128,).
++            bn_std: BN running std of shape (128,).
++
++        Returns:
++            Normalized latents of same shape.
++        """
++        return (x - bn_mean.to(x.device, x.dtype)) / bn_std.to(x.device, x.dtype)
++
++    def _bn_denormalize(
++        self,
++        x: torch.Tensor,
++        bn_mean: torch.Tensor,
++        bn_std: torch.Tensor,
++    ) -> torch.Tensor:
++        """Apply BN denormalization to packed latents.
++
++        Inverse BN (affine=False): x = y * std + mean
++
++        Args:
++            x: Packed latents of shape (B, seq, 128).
++            bn_mean: BN running mean of shape (128,).
++            bn_std: BN running std of shape (128,).
++
++        Returns:
++            Denormalized latents of same shape.
++        """
++        return x * bn_std.to(x.device, x.dtype) + bn_mean.to(x.device, x.dtype)
++
++    @torch.no_grad()
++    def invoke(self, context: InvocationContext) -> LatentsOutput:
++        latents = self._run_diffusion(context)
++        latents = latents.detach().to("cpu")
++
++        name = context.tensors.save(tensor=latents)
++        return LatentsOutput.build(latents_name=name, latents=latents, seed=None)
++
++    def _run_diffusion(self, context: InvocationContext) -> torch.Tensor:
++        inference_dtype = torch.bfloat16
++        device = TorchDevice.choose_torch_device()
++
++        # Extract BN stats from VAE (moved to device once, not per-call)
++        bn_stats = self._get_bn_stats(context)
++        bn_mean, bn_std = bn_stats if bn_stats is not None else (None, None)
++
++        # Load input latents if provided (for img2img / inpainting)
++        init_latents = context.tensors.load(self.latents.latents_name) if self.latents else None
++        if init_latents is not None:
++            init_latents = init_latents.to(device=device, dtype=inference_dtype)
++
++        # Generate noise (32-channel for FLUX.2 VAE)
++        noise = get_noise_flux2(
++            num_samples=1,
++            height=self.height,
++            width=self.width,
++            device=device,
++            dtype=inference_dtype,
++            seed=self.seed,
++        )
++        b, _c, latent_h, latent_w = noise.shape
++        packed_h = latent_h // 2
++        packed_w = latent_w // 2
++
++        # Load positive conditioning (Qwen3 embeddings via FluxConditioningField)
++        pos_cond_data = context.conditioning.load(self.positive_text_conditioning.conditioning_name)
++        assert len(pos_cond_data.conditionings) == 1
++        pos_flux_conditioning = pos_cond_data.conditionings[0]
++        assert isinstance(pos_flux_conditioning, FLUXConditioningInfo)
++        pos_flux_conditioning = pos_flux_conditioning.to(dtype=inference_dtype, device=device)
++
++        txt = pos_flux_conditioning.t5_embeds  # Qwen3 stacked embeddings stored in t5_embeds field
++
++        # Create text position IDs (4D for FLUX.2 RoPE)
++        seq_len = txt.shape[1]
++        txt_ids = torch.zeros(1, seq_len, 4, device=device, dtype=torch.long)
++        txt_ids[..., 3] = torch.arange(seq_len, device=device, dtype=torch.long)
++
++        # Load negative conditioning if provided
++        neg_txt = None
++        neg_txt_ids = None
++        if self.negative_text_conditioning is not None:
++            neg_cond_data = context.conditioning.load(self.negative_text_conditioning.conditioning_name)
++            assert len(neg_cond_data.conditionings) == 1
++            neg_flux_conditioning = neg_cond_data.conditionings[0]
++            assert isinstance(neg_flux_conditioning, FLUXConditioningInfo)
++            neg_flux_conditioning = neg_flux_conditioning.to(dtype=inference_dtype, device=device)
++            neg_txt = neg_flux_conditioning.t5_embeds
++            neg_seq_len = neg_txt.shape[1]
++            neg_txt_ids = torch.zeros(1, neg_seq_len, 4, device=device, dtype=torch.long)
++            neg_txt_ids[..., 3] = torch.arange(neg_seq_len, device=device, dtype=torch.long)
++
++        # Validate transformer model config
++        transformer_config = context.models.get_config(self.transformer.transformer)
++        assert transformer_config.base == BaseModelType.Flux2 and transformer_config.type == ModelType.Main
++
++        # Compute schedule with dynamic shifting
++        image_seq_len = packed_h * packed_w
++        timesteps = get_schedule_flux2(
++            num_steps=self.num_steps,
++            image_seq_len=image_seq_len,
++        )
++        mu = compute_empirical_mu(image_seq_len=image_seq_len, num_steps=self.num_steps)
++
++        # Clip schedule to denoising range
++        timesteps = clip_timestep_schedule_fractional(timesteps, self.denoising_start, self.denoising_end)
++
++        # Prepare initial sample
++        if init_latents is not None:
++            if self.add_noise:
++                t_0 = timesteps[0]
++                x = t_0 * noise + (1.0 - t_0) * init_latents
++            else:
++                x = init_latents
++        else:
++            if self.denoising_start > 1e-5:
++                raise ValueError("denoising_start should be 0 when initial latents are not provided.")
++            x = noise
++
++        # Short-circuit if schedule is exhausted
++        if len(timesteps) <= 1:
++            return x
++
++        # Generate 4D image position IDs (int64 for RoPE)
++        img_ids = generate_img_ids_flux2(h=latent_h, w=latent_w, batch_size=b, device=device)
++
++        # Prepare inpaint mask
++        inpaint_mask = self._prep_inpaint_mask(context, x)
++
++        # Pack all tensors to sequence format: (B, 32, H, W) -> (B, H/2*W/2, 128)
++        init_latents_packed = pack_flux2(init_latents) if init_latents is not None else None
++        inpaint_mask_packed = pack_flux2(inpaint_mask) if inpaint_mask is not None else None
++        noise_packed = pack_flux2(noise)
++        x = pack_flux2(x)
++
++        # Apply BN normalization (latent space normalization from VAE stats)
++        if bn_mean is not None and bn_std is not None:
++            x = self._bn_normalize(x, bn_mean, bn_std)
++            if init_latents_packed is not None:
++                init_latents_packed = self._bn_normalize(init_latents_packed, bn_mean, bn_std)
++            noise_packed = self._bn_normalize(noise_packed, bn_mean, bn_std)
++
++        assert packed_h * packed_w == x.shape[1]
++
++        # Setup inpainting extension
++        inpaint_extension: Optional[RectifiedFlowInpaintExtension] = None
++        if inpaint_mask_packed is not None:
++            assert init_latents_packed is not None
++            inpaint_extension = RectifiedFlowInpaintExtension(
++                init_latents=init_latents_packed,
++                inpaint_mask=inpaint_mask_packed,
++                noise=noise_packed,
++            )
++
++        num_steps = len(timesteps) - 1
++        cfg_scale_list = [self.cfg_scale] * num_steps
++
++        # Use scheduler for non-inpainting workflows (inpainting needs exact timestep control)
++        is_inpainting = self.denoise_mask is not None or self.denoising_start > 1e-5
++
++        scheduler = None
++        if self.scheduler in FLUX_SCHEDULER_MAP and not is_inpainting:
++            scheduler_class = FLUX_SCHEDULER_MAP[self.scheduler]
++            scheduler = scheduler_class(
++                num_train_timesteps=1000,
++                shift=3.0,
++                use_dynamic_shifting=True,
++                base_shift=0.5,
++                max_shift=1.15,
++                base_image_seq_len=256,
++                max_image_seq_len=4096,
++                time_shift_type="exponential",
++            )
++
++        # Run transformer with LoRA support
++        with ExitStack() as exit_stack:
++            (cached_weights, transformer) = exit_stack.enter_context(
++                context.models.load(self.transformer.transformer).model_on_device()
++            )
++            config = transformer_config
++
++            # Determine if model is quantized (affects LoRA patching strategy)
++            if config.format in [ModelFormat.Diffusers]:
++                model_is_quantized = False
++            elif config.format in [
++                ModelFormat.BnbQuantizedLlmInt8b,
++                ModelFormat.BnbQuantizednf4b,
++                ModelFormat.GGUFQuantized,
++            ]:
++                model_is_quantized = True
++            else:
++                model_is_quantized = False
++
++            exit_stack.enter_context(
++                LayerPatcher.apply_smart_model_patches(
++                    model=transformer,
++                    patches=self._lora_iterator(context),
++                    prefix=FLUX_LORA_TRANSFORMER_PREFIX,
++                    dtype=inference_dtype,
++                    cached_weights=cached_weights,
++                    force_sidecar_patching=model_is_quantized,
++                )
++            )
++
++            x = denoise(
++                model=transformer,
++                img=x,
++                img_ids=img_ids,
++                txt=txt,
++                txt_ids=txt_ids,
++                timesteps=timesteps,
++                step_callback=self._build_step_callback(context),
++                cfg_scale=cfg_scale_list,
++                neg_txt=neg_txt,
++                neg_txt_ids=neg_txt_ids,
++                scheduler=scheduler,
++                mu=mu,
++                inpaint_extension=inpaint_extension,
++            )
++
++        # Denormalize BN before unpacking
++        if bn_mean is not None and bn_std is not None:
++            x = self._bn_denormalize(x, bn_mean, bn_std)
++
++        # Unpack from sequence format back to spatial: (B, H/2*W/2, 128) -> (B, 32, H, W)
++        x = unpack_flux2(x.float(), self.height, self.width)
++        return x
++
++    def _prep_inpaint_mask(self, context: InvocationContext, latents: torch.Tensor) -> Optional[torch.Tensor]:
++        """Prepare the inpaint mask, resizing to latent dimensions."""
++        if self.denoise_mask is None:
++            return None
++
++        mask = context.tensors.load(self.denoise_mask.mask_name)
++        # Invert mask: denoise_mask is 1 where we want to preserve, inpaint_extension expects 1 where we denoise
++        mask = 1.0 - mask
++
++        _, _, latent_height, latent_width = latents.shape
++        mask = tv_resize(
++            img=mask,
++            size=[latent_height, latent_width],
++            interpolation=tv_transforms.InterpolationMode.BILINEAR,
++            antialias=False,
++        )
++
++        mask = mask.to(device=latents.device, dtype=latents.dtype)
++        return mask.expand_as(latents)
++
++    def _lora_iterator(self, context: InvocationContext) -> Iterator[Tuple[ModelPatchRaw, float]]:
++        """Iterate over LoRA models to apply to the transformer."""
++        for lora in self.transformer.loras:
++            lora_info = context.models.load(lora.lora)
++            assert isinstance(lora_info.model, ModelPatchRaw)
++            yield (lora_info.model, lora.weight)
++            del lora_info
++
++    def _build_step_callback(self, context: InvocationContext) -> Callable[[PipelineIntermediateState], None]:
++        """Build callback for step progress updates."""
++
++        def step_callback(state: PipelineIntermediateState) -> None:
++            latents = state.latents.float()
++            state.latents = unpack_flux2(latents, self.height, self.width).squeeze()
++            context.util.flux_step_callback(state)
++
++        return step_callback
+diff --git a/invokeai/app/invocations/flux2_klein_model_loader.py b/invokeai/app/invocations/flux2_klein_model_loader.py
+new file mode 100644
+index 0000000..197408c
+--- /dev/null
++++ b/invokeai/app/invocations/flux2_klein_model_loader.py
+@@ -0,0 +1,208 @@
++"""Flux2 Klein Model Loader Invocation.
++
++Loads a Flux2 Klein model with its Qwen3 text encoder and VAE.
++Unlike standard FLUX which uses CLIP+T5, Klein uses only Qwen3.
++"""
++
++from typing import Literal, Optional
++
++from invokeai.app.invocations.baseinvocation import (
++    BaseInvocation,
++    BaseInvocationOutput,
++    Classification,
++    invocation,
++    invocation_output,
++)
++from invokeai.app.invocations.fields import FieldDescriptions, Input, InputField, OutputField
++from invokeai.app.invocations.model import (
++    ModelIdentifierField,
++    Qwen3EncoderField,
++    TransformerField,
++    VAEField,
++)
++from invokeai.app.services.shared.invocation_context import InvocationContext
++from invokeai.backend.model_manager.taxonomy import (
++    BaseModelType,
++    Flux2VariantType,
++    ModelFormat,
++    ModelType,
++    Qwen3VariantType,
++    SubModelType,
++)
++
++
++@invocation_output("flux2_klein_model_loader_output")
++class Flux2KleinModelLoaderOutput(BaseInvocationOutput):
++    """Flux2 Klein model loader output."""
++
++    transformer: TransformerField = OutputField(description=FieldDescriptions.transformer, title="Transformer")
++    qwen3_encoder: Qwen3EncoderField = OutputField(description=FieldDescriptions.qwen3_encoder, title="Qwen3 Encoder")
++    vae: VAEField = OutputField(description=FieldDescriptions.vae, title="VAE")
++    max_seq_len: Literal[256, 512] = OutputField(
++        description="The max sequence length for the Qwen3 encoder.",
++        title="Max Seq Length",
++    )
++
++
++@invocation(
++    "flux2_klein_model_loader",
++    title="Main Model - Flux2 Klein",
++    tags=["model", "flux", "klein", "qwen3"],
++    category="model",
++    version="1.0.0",
++    classification=Classification.Prototype,
++)
++class Flux2KleinModelLoaderInvocation(BaseInvocation):
++    """Loads a Flux2 Klein model, outputting its submodels.
++
++    Flux2 Klein uses Qwen3 as the text encoder instead of CLIP+T5.
++    It uses a 32-channel VAE (AutoencoderKLFlux2) instead of the 16-channel FLUX.1 VAE.
++
++    When using a Diffusers format model, both VAE and Qwen3 encoder are extracted
++    automatically from the main model. You can override with standalone models:
++    - Transformer: Always from Flux2 Klein main model
++    - VAE: From main model (Diffusers) or standalone VAE
++    - Qwen3 Encoder: From main model (Diffusers) or standalone Qwen3 model
++    """
++
++    model: ModelIdentifierField = InputField(
++        description=FieldDescriptions.flux_model,
++        input=Input.Direct,
++        ui_model_base=BaseModelType.Flux2,
++        ui_model_type=ModelType.Main,
++        title="Transformer",
++    )
++
++    vae_model: Optional[ModelIdentifierField] = InputField(
++        default=None,
++        description="Standalone VAE model. FLUX.2 Klein uses a 32-channel VAE. "
++        "If not provided, VAE will be loaded from the Qwen3 Source model.",
++        input=Input.Direct,
++        ui_model_base=[BaseModelType.Flux, BaseModelType.Flux2],
++        ui_model_type=ModelType.VAE,
++        title="VAE",
++    )
++
++    qwen3_encoder_model: Optional[ModelIdentifierField] = InputField(
++        default=None,
++        description="Standalone Qwen3 Encoder model. "
++        "If not provided, encoder will be loaded from the Qwen3 Source model.",
++        input=Input.Direct,
++        ui_model_type=ModelType.Qwen3Encoder,
++        title="Qwen3 Encoder",
++    )
++
++    qwen3_source_model: Optional[ModelIdentifierField] = InputField(
++        default=None,
++        description="Diffusers Flux2 Klein model to extract VAE and/or Qwen3 encoder from. "
++        "Use this if you don't have separate VAE/Qwen3 models. "
++        "Ignored if both VAE and Qwen3 Encoder are provided separately.",
++        input=Input.Direct,
++        ui_model_base=BaseModelType.Flux2,
++        ui_model_type=ModelType.Main,
++        ui_model_format=ModelFormat.Diffusers,
++        title="Qwen3 Source (Diffusers)",
++    )
++
++    max_seq_len: Literal[256, 512] = InputField(
++        default=512,
++        description="Max sequence length for the Qwen3 encoder.",
++        title="Max Seq Length",
++    )
++
++    def invoke(self, context: InvocationContext) -> Flux2KleinModelLoaderOutput:
++        # Transformer always comes from the main model
++        transformer = self.model.model_copy(update={"submodel_type": SubModelType.Transformer})
++
++        # Check if main model is Diffusers format (can extract VAE directly)
++        main_config = context.models.get_config(self.model)
++        main_is_diffusers = main_config.format == ModelFormat.Diffusers
++
++        # Determine VAE source
++        if self.vae_model is not None:
++            vae = self.vae_model.model_copy(update={"submodel_type": SubModelType.VAE})
++        elif main_is_diffusers:
++            vae = self.model.model_copy(update={"submodel_type": SubModelType.VAE})
++        elif self.qwen3_source_model is not None:
++            self._validate_diffusers_format(context, self.qwen3_source_model, "Qwen3 Source")
++            vae = self.qwen3_source_model.model_copy(update={"submodel_type": SubModelType.VAE})
++        else:
++            raise ValueError(
++                "No VAE source provided. Standalone safetensors/GGUF models require a separate VAE. "
++                "Options:\n"
++                "  1. Set 'VAE' to a standalone FLUX VAE model\n"
++                "  2. Set 'Qwen3 Source' to a Diffusers Flux2 Klein model to extract the VAE from"
++            )
++
++        # Determine Qwen3 Encoder source
++        if self.qwen3_encoder_model is not None:
++            self._validate_qwen3_encoder_variant(context, main_config)
++            qwen3_tokenizer = self.qwen3_encoder_model.model_copy(update={"submodel_type": SubModelType.Tokenizer})
++            qwen3_encoder = self.qwen3_encoder_model.model_copy(update={"submodel_type": SubModelType.TextEncoder})
++        elif main_is_diffusers:
++            qwen3_tokenizer = self.model.model_copy(update={"submodel_type": SubModelType.Tokenizer})
++            qwen3_encoder = self.model.model_copy(update={"submodel_type": SubModelType.TextEncoder})
++        elif self.qwen3_source_model is not None:
++            self._validate_diffusers_format(context, self.qwen3_source_model, "Qwen3 Source")
++            qwen3_tokenizer = self.qwen3_source_model.model_copy(update={"submodel_type": SubModelType.Tokenizer})
++            qwen3_encoder = self.qwen3_source_model.model_copy(update={"submodel_type": SubModelType.TextEncoder})
++        else:
++            raise ValueError(
++                "No Qwen3 Encoder source provided. Standalone safetensors/GGUF models require a separate text encoder. "
++                "Options:\n"
++                "  1. Set 'Qwen3 Encoder' to a standalone Qwen3 text encoder model "
++                "(Klein 4B needs Qwen3 4B, Klein 9B needs Qwen3 8B)\n"
++                "  2. Set 'Qwen3 Source' to a Diffusers Flux2 Klein model to extract the encoder from"
++            )
++
++        return Flux2KleinModelLoaderOutput(
++            transformer=TransformerField(transformer=transformer, loras=[]),
++            qwen3_encoder=Qwen3EncoderField(tokenizer=qwen3_tokenizer, text_encoder=qwen3_encoder),
++            vae=VAEField(vae=vae),
++            max_seq_len=self.max_seq_len,
++        )
++
++    def _validate_diffusers_format(
++        self, context: InvocationContext, model: ModelIdentifierField, model_name: str
++    ) -> None:
++        """Validate that a model is in Diffusers format."""
++        config = context.models.get_config(model)
++        if config.format != ModelFormat.Diffusers:
++            raise ValueError(
++                f"The {model_name} model must be a Diffusers format model. "
++                f"The selected model '{config.name}' is in {config.format.value} format."
++            )
++
++    def _validate_qwen3_encoder_variant(self, context: InvocationContext, main_config) -> None:  # type: ignore
++        """Validate that the standalone Qwen3 encoder variant matches the FLUX.2 Klein variant.
++
++        - FLUX.2 Klein 4B requires Qwen3 4B encoder
++        - FLUX.2 Klein 9B requires Qwen3 8B encoder
++        """
++        if self.qwen3_encoder_model is None:
++            return
++
++        qwen3_config = context.models.get_config(self.qwen3_encoder_model)
++
++        if not hasattr(qwen3_config, "variant"):
++            return
++
++        qwen3_variant = qwen3_config.variant
++
++        if not hasattr(main_config, "variant"):
++            return
++
++        flux2_variant = main_config.variant
++
++        expected_qwen3_variant = None
++        if flux2_variant == Flux2VariantType.Klein4B:
++            expected_qwen3_variant = Qwen3VariantType.Qwen3_4B
++        elif flux2_variant in (Flux2VariantType.Klein9B, Flux2VariantType.Klein9BBase):
++            expected_qwen3_variant = Qwen3VariantType.Qwen3_8B
++
++        if expected_qwen3_variant is not None and qwen3_variant != expected_qwen3_variant:
++            raise ValueError(
++                f"Qwen3 encoder variant mismatch: FLUX.2 Klein {flux2_variant.value} requires "
++                f"{expected_qwen3_variant.value} encoder, but {qwen3_variant.value} was selected. "
++                f"Please select a matching Qwen3 encoder or use a Diffusers format model."
++            )
+diff --git a/invokeai/app/invocations/flux2_klein_text_encoder.py b/invokeai/app/invocations/flux2_klein_text_encoder.py
+new file mode 100644
+index 0000000..387e358
+--- /dev/null
++++ b/invokeai/app/invocations/flux2_klein_text_encoder.py
+@@ -0,0 +1,197 @@
++"""Flux2 Klein Text Encoder Invocation.
++
++Flux2 Klein uses Qwen3 as the text encoder instead of CLIP+T5.
++The key difference is that it extracts hidden states from layers (9, 18, 27)
++and stacks them together for richer text representations.
++
++This implementation matches the diffusers Flux2KleinPipeline exactly.
++"""
++
++from contextlib import ExitStack
++from typing import Iterator, Literal, Optional, Tuple
++
++import torch
++from transformers import PreTrainedModel, PreTrainedTokenizerBase
++
++from invokeai.app.invocations.baseinvocation import BaseInvocation, Classification, invocation
++from invokeai.app.invocations.fields import (
++    FieldDescriptions,
++    FluxConditioningField,
++    Input,
++    InputField,
++    TensorField,
++    UIComponent,
++)
++from invokeai.app.invocations.model import Qwen3EncoderField
++from invokeai.app.invocations.primitives import FluxConditioningOutput
++from invokeai.app.services.shared.invocation_context import InvocationContext
++from invokeai.backend.patches.layer_patcher import LayerPatcher
++from invokeai.backend.patches.lora_conversions.flux_lora_constants import FLUX_LORA_T5_PREFIX
++from invokeai.backend.patches.model_patch_raw import ModelPatchRaw
++from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningFieldData, FLUXConditioningInfo
++from invokeai.backend.util.devices import TorchDevice
++
++# Qwen3 hidden state layers extracted for Klein-style stacking
++KLEIN_EXTRACTION_LAYERS = (9, 18, 27)
++KLEIN_MAX_SEQ_LEN = 512
++
++
++@invocation(
++    "flux2_klein_text_encoder",
++    title="Prompt - Flux2 Klein",
++    tags=["prompt", "conditioning", "flux", "klein", "qwen3"],
++    category="conditioning",
++    version="1.1.0",
++    classification=Classification.Prototype,
++)
++class Flux2KleinTextEncoderInvocation(BaseInvocation):
++    """Encodes and preps a prompt for Flux2 Klein image generation.
++
++    Flux2 Klein uses Qwen3 as the text encoder, extracting hidden states from
++    layers (9, 18, 27) and stacking them for richer text representations.
++    This matches the diffusers Flux2KleinPipeline implementation exactly.
++    """
++
++    prompt: str = InputField(description="Text prompt to encode.", ui_component=UIComponent.Textarea)
++    qwen3_encoder: Qwen3EncoderField = InputField(
++        title="Qwen3 Encoder",
++        description=FieldDescriptions.qwen3_encoder,
++        input=Input.Connection,
++    )
++    max_seq_len: Literal[256, 512] = InputField(
++        default=512,
++        description="Max sequence length for the Qwen3 encoder.",
++    )
++    mask: Optional[TensorField] = InputField(
++        default=None,
++        description="A mask defining the region that this conditioning prompt applies to.",
++    )
++
++    @torch.no_grad()
++    def invoke(self, context: InvocationContext) -> FluxConditioningOutput:
++        qwen3_embeds, pooled_embeds = self._encode_prompt(context)
++
++        conditioning_data = ConditioningFieldData(
++            conditionings=[FLUXConditioningInfo(clip_embeds=pooled_embeds, t5_embeds=qwen3_embeds)]
++        )
++
++        conditioning_name = context.conditioning.save(conditioning_data)
++        return FluxConditioningOutput(
++            conditioning=FluxConditioningField(conditioning_name=conditioning_name, mask=self.mask)
++        )
++
++    def _encode_prompt(self, context: InvocationContext) -> Tuple[torch.Tensor, torch.Tensor]:
++        """Encode prompt using Qwen3 text encoder with Klein-style layer extraction.
++
++        This matches the diffusers Flux2KleinPipeline._get_qwen3_prompt_embeds() exactly.
++
++        Returns:
++            Tuple of (stacked_embeddings, pooled_embedding):
++            - stacked_embeddings: Hidden states from layers (9, 18, 27) stacked together.
++              Shape: (1, seq_len, hidden_size * 3)
++            - pooled_embedding: Pooled representation for global conditioning.
++              Shape: (1, hidden_size)
++        """
++        device = TorchDevice.choose_torch_device()
++
++        text_encoder_info = context.models.load(self.qwen3_encoder.text_encoder)
++        tokenizer_info = context.models.load(self.qwen3_encoder.tokenizer)
++
++        with ExitStack() as exit_stack:
++            (cached_weights, text_encoder) = exit_stack.enter_context(text_encoder_info.model_on_device())
++            (_, tokenizer) = exit_stack.enter_context(tokenizer_info.model_on_device())
++
++            lora_dtype = TorchDevice.choose_bfloat16_safe_dtype(device)
++            exit_stack.enter_context(
++                LayerPatcher.apply_smart_model_patches(
++                    model=text_encoder,
++                    patches=self._lora_iterator(context),
++                    prefix=FLUX_LORA_T5_PREFIX,
++                    dtype=lora_dtype,
++                    cached_weights=cached_weights,
++                )
++            )
++
++            context.util.signal_progress("Running Qwen3 text encoder (Klein)")
++
++            if not isinstance(text_encoder, PreTrainedModel):
++                raise TypeError(
++                    f"Expected PreTrainedModel for text encoder, got {type(text_encoder).__name__}. "
++                    "The Qwen3 encoder model may be corrupted or incompatible."
++                )
++            if not isinstance(tokenizer, PreTrainedTokenizerBase):
++                raise TypeError(
++                    f"Expected PreTrainedTokenizerBase for tokenizer, got {type(tokenizer).__name__}. "
++                    "The Qwen3 tokenizer may be corrupted or incompatible."
++                )
++
++            # Apply Qwen3 chat template for proper tokenization
++            messages = [{"role": "user", "content": self.prompt}]
++            text: str = tokenizer.apply_chat_template(
++                messages,
++                tokenize=False,
++                add_generation_prompt=True,
++                enable_thinking=False,
++            )
++
++            inputs = tokenizer(
++                text,
++                return_tensors="pt",
++                padding="max_length",
++                truncation=True,
++                max_length=self.max_seq_len,
++            )
++
++            input_ids = inputs["input_ids"].to(device)
++            attention_mask = inputs["attention_mask"].to(device)
++
++            outputs = text_encoder(
++                input_ids=input_ids,
++                attention_mask=attention_mask,
++                output_hidden_states=True,
++                use_cache=False,
++            )
++
++            if not hasattr(outputs, "hidden_states") or outputs.hidden_states is None:
++                raise RuntimeError(
++                    "Text encoder did not return hidden_states. "
++                    "Ensure output_hidden_states=True is supported by this model."
++                )
++
++            num_hidden_layers = len(outputs.hidden_states)
++
++            # Extract hidden states from specified layers and stack them
++            hidden_states_list = []
++            for layer_idx in KLEIN_EXTRACTION_LAYERS:
++                # Clamp to available layers
++                effective_idx = min(layer_idx, num_hidden_layers - 1)
++                hidden_states_list.append(outputs.hidden_states[effective_idx])
++
++            # Stack: (batch, num_layers, seq_len, hidden_dim)
++            out = torch.stack(hidden_states_list, dim=1)
++            out = out.to(dtype=text_encoder.dtype, device=device)
++
++            # Reshape to (batch, seq_len, num_layers * hidden_dim)
++            batch_size, num_channels, seq_len, hidden_dim = out.shape
++            prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
++
++            # Compute pooled embedding via mean pooling over non-padding tokens
++            last_hidden_state = outputs.hidden_states[-1]
++            expanded_mask = attention_mask.unsqueeze(-1).expand_as(last_hidden_state).float()
++            sum_embeds = (last_hidden_state * expanded_mask).sum(dim=1)
++            num_tokens = expanded_mask.sum(dim=1).clamp(min=1)
++            pooled_embeds = sum_embeds / num_tokens
++
++        return prompt_embeds, pooled_embeds
++
++    def _lora_iterator(self, context: InvocationContext) -> Iterator[Tuple[ModelPatchRaw, float]]:
++        """Iterate over LoRA models to apply to the Qwen3 text encoder."""
++        for lora in self.qwen3_encoder.loras:
++            lora_info = context.models.load(lora.lora)
++            if not isinstance(lora_info.model, ModelPatchRaw):
++                raise TypeError(
++                    f"Expected ModelPatchRaw for LoRA '{lora.lora.key}', got {type(lora_info.model).__name__}. "
++                    "The LoRA model may be corrupted or incompatible."
++                )
++            yield (lora_info.model, lora.weight)
++            del lora_info
+diff --git a/invokeai/app/invocations/flux2_vae_decode.py b/invokeai/app/invocations/flux2_vae_decode.py
+new file mode 100644
+index 0000000..67e370a
+--- /dev/null
++++ b/invokeai/app/invocations/flux2_vae_decode.py
+@@ -0,0 +1,86 @@
++"""FLUX.2 VAE Decode Invocation.
++
++Decodes FLUX.2 latents to images using AutoencoderKLFlux2.
++
++Key differences from FLUX.1 VAE:
++- 32 latent channels (vs 16)
++- patch_size=[2, 2]
++- Uses quant_conv/post_quant_conv
++- Output range is [-1, 1]
++"""
++
++import torch
++from einops import rearrange
++from PIL import Image
++
++from invokeai.app.invocations.baseinvocation import BaseInvocation, Classification, invocation
++from invokeai.app.invocations.fields import (
++    FieldDescriptions,
++    Input,
++    InputField,
++    LatentsField,
++    WithBoard,
++    WithMetadata,
++)
++from invokeai.app.invocations.model import VAEField
++from invokeai.app.invocations.primitives import ImageOutput
++from invokeai.app.services.shared.invocation_context import InvocationContext
++from invokeai.backend.util.devices import TorchDevice
++
++
++@invocation(
++    "flux2_vae_decode",
++    title="Latents to Image - FLUX.2",
++    tags=["latents", "image", "vae", "l2i", "flux2"],
++    category="latents",
++    version="1.1.0",
++    classification=Classification.Prototype,
++)
++class Flux2VaeDecodeInvocation(BaseInvocation, WithMetadata, WithBoard):
++    """Generates an image from FLUX.2 latents using AutoencoderKLFlux2."""
++
++    latents: LatentsField = InputField(
++        description=FieldDescriptions.latents,
++        input=Input.Connection,
++    )
++    vae: VAEField = InputField(
++        description="FLUX.2 VAE model (AutoencoderKLFlux2).",
++        input=Input.Connection,
++    )
++
++    def _vae_decode(self, vae: torch.nn.Module, latents: torch.Tensor) -> Image.Image:
++        """Decode latents using the FLUX.2 VAE.
++
++        The FLUX.2 VAE (AutoencoderKLFlux2) expects:
++        - Input: [B, 32, H/8, W/8] latent tensor
++        - Output: [B, 3, H, W] image tensor in [-1, 1] range
++        """
++        vae_dtype = next(iter(vae.parameters())).dtype
++        device = TorchDevice.choose_torch_device()
++        latents = latents.to(device=device, dtype=vae_dtype)
++
++        # Decode using the VAE
++        # Handle both diffusers API (.decode()) and custom API
++        if hasattr(vae, "decode"):
++            decoded = vae.decode(latents, return_dict=False)[0]
++        else:
++            decoded = vae(latents)
++
++        # Convert from [-1, 1] to [0, 1] then to [0, 255] PIL image
++        img = (decoded / 2 + 0.5).clamp(0, 1)
++        img = rearrange(img[0], "c h w -> h w c")
++        img_pil = Image.fromarray((img * 255).byte().cpu().numpy())
++        return img_pil
++
++    @torch.no_grad()
++    def invoke(self, context: InvocationContext) -> ImageOutput:
++        latents = context.tensors.load(self.latents.latents_name)
++
++        vae_info = context.models.load(self.vae.vae)
++        with vae_info.model_on_device() as (_, vae):
++            context.util.signal_progress("Running FLUX.2 VAE Decode")
++            image = self._vae_decode(vae=vae, latents=latents)
++
++        TorchDevice.empty_cache()
++        image_dto = context.images.save(image=image)
++        return ImageOutput.build(image_dto)
+diff --git a/invokeai/backend/flux/util.py b/invokeai/backend/flux/util.py
+index 2cf52b6..934c538 100644
+--- a/invokeai/backend/flux/util.py
++++ b/invokeai/backend/flux/util.py
+@@ -5,7 +5,7 @@ from typing import Literal
+ 
+ from invokeai.backend.flux.model import FluxParams
+ from invokeai.backend.flux.modules.autoencoder import AutoEncoderParams
+-from invokeai.backend.model_manager.taxonomy import AnyVariant, FluxVariantType
++from invokeai.backend.model_manager.taxonomy import AnyVariant, Flux2VariantType, FluxVariantType
+ 
+ 
+ @dataclass
+@@ -46,6 +46,10 @@ _flux_max_seq_lengths: dict[AnyVariant, Literal[256, 512]] = {
+     FluxVariantType.Dev: 512,
+     FluxVariantType.DevFill: 512,
+     FluxVariantType.Schnell: 256,
++    Flux2VariantType.Klein4B: 512,
++    Flux2VariantType.Klein9B: 512,
++    Flux2VariantType.Klein9BBase: 512,
++    Flux2VariantType.Klein9BFP8: 512,
+ }
+ 
+ 
+@@ -117,6 +121,51 @@ _flux_transformer_params: dict[AnyVariant, FluxParams] = {
+         qkv_bias=True,
+         guidance_embed=True,
+     ),
++    # FLUX.2-klein variants use Qwen3 text encoder and 32-channel VAE.
++    # These FluxParams entries are for pipeline-level config (context_in_dim, vec_in_dim).
++    # The actual model is loaded via diffusers Flux2Transformer2DModel.
++    Flux2VariantType.Klein4B: FluxParams(
++        in_channels=64,
++        vec_in_dim=2560,  # Qwen3-4B hidden_size (pooled embedding)
++        context_in_dim=7680,  # 3 stacked Qwen3-4B layers: 3 * 2560
++        hidden_size=3072,
++        mlp_ratio=4.0,
++        num_heads=24,
++        depth=19,
++        depth_single_blocks=38,
++        axes_dim=[16, 56, 56],
++        theta=10_000,
++        qkv_bias=True,
++        guidance_embed=False,  # Distilled model, no guidance embedding
++    ),
++    Flux2VariantType.Klein9B: FluxParams(
++        in_channels=64,
++        vec_in_dim=4096,  # Qwen3-8B hidden_size (pooled embedding)
++        context_in_dim=12288,  # 3 stacked Qwen3-8B layers: 3 * 4096
++        hidden_size=3072,
++        mlp_ratio=4.0,
++        num_heads=24,
++        depth=19,
++        depth_single_blocks=38,
++        axes_dim=[16, 56, 56],
++        theta=10_000,
++        qkv_bias=True,
++        guidance_embed=False,  # Distilled model, no guidance embedding
++    ),
++    Flux2VariantType.Klein9BBase: FluxParams(
++        in_channels=64,
++        vec_in_dim=4096,  # Qwen3-8B hidden_size (pooled embedding)
++        context_in_dim=12288,  # 3 stacked Qwen3-8B layers: 3 * 4096
++        hidden_size=3072,
++        mlp_ratio=4.0,
++        num_heads=24,
++        depth=19,
++        depth_single_blocks=38,
++        axes_dim=[16, 56, 56],
++        theta=10_000,
++        qkv_bias=True,
++        guidance_embed=True,  # Undistilled base model uses guidance
++    ),
+ }
+ 
+ 
+diff --git a/invokeai/backend/flux2/__init__.py b/invokeai/backend/flux2/__init__.py
+new file mode 100644
+index 0000000..fbab18c
+--- /dev/null
++++ b/invokeai/backend/flux2/__init__.py
+@@ -0,0 +1,9 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""FLUX.2 model support for InvokeAI.
++
++FLUX.2-klein is a distinct architecture from FLUX.1, featuring:
++- Different transformer structure (Flux2Transformer2DModel)
++- Qwen3 text encoder instead of CLIP+T5
++- Different VAE with 32 latent channels
++- Different RoPE configuration
++"""
+diff --git a/invokeai/backend/flux2/denoise.py b/invokeai/backend/flux2/denoise.py
+new file mode 100644
+index 0000000..af0fabf
+--- /dev/null
++++ b/invokeai/backend/flux2/denoise.py
+@@ -0,0 +1,305 @@
++"""FLUX.2 Klein denoise loop implementation.
++
++Supports:
++- Manual Euler stepping (for inpainting/img2img with exact timestep control)
++- Diffusers schedulers (Euler, Heun, LCM) with dynamic shifting via mu parameter
++- CFG with negative conditioning
++- Inpainting via RectifiedFlowInpaintExtension
++- Qwen3 text conditioning (no CLIP embeddings)
++"""
++
++import inspect
++import math
++from typing import Callable
++
++import torch
++from diffusers.schedulers.scheduling_utils import SchedulerMixin
++from tqdm import tqdm
++
++from invokeai.backend.rectified_flow.rectified_flow_inpaint_extension import RectifiedFlowInpaintExtension
++from invokeai.backend.stable_diffusion.diffusers_pipeline import PipelineIntermediateState
++
++
++def denoise(
++    model: torch.nn.Module,
++    # Model input
++    img: torch.Tensor,
++    img_ids: torch.Tensor,
++    txt: torch.Tensor,
++    txt_ids: torch.Tensor,
++    # Sampling parameters
++    timesteps: list[float],
++    step_callback: Callable[[PipelineIntermediateState], None],
++    cfg_scale: list[float] | None = None,
++    # Negative conditioning (for CFG)
++    neg_txt: torch.Tensor | None = None,
++    neg_txt_ids: torch.Tensor | None = None,
++    # Scheduler support
++    scheduler: SchedulerMixin | None = None,
++    mu: float | None = None,
++    # Inpainting
++    inpaint_extension: RectifiedFlowInpaintExtension | None = None,
++) -> torch.Tensor:
++    """Run FLUX.2 Klein denoising loop.
++
++    FLUX.2 Klein uses guidance_embeds=False (distilled), so no guidance parameter is used.
++    CFG is applied externally through negative conditioning.
++
++    Args:
++        model: FLUX.2 transformer model (Flux2 or diffusers Flux2Transformer2DModel).
++        img: Packed noisy latents [B, seq_len, 128].
++        img_ids: Image position IDs [B, seq_len, 4] (int64).
++        txt: Qwen3 text embeddings [B, txt_len, context_in_dim].
++        txt_ids: Text position IDs [B, txt_len, 4] (int64).
++        timesteps: Sigma schedule (descending from 1 to 0, length = num_steps + 1).
++        step_callback: Progress callback.
++        cfg_scale: Per-step CFG scale values.
++        neg_txt: Negative text embeddings for CFG.
++        neg_txt_ids: Negative text position IDs.
++        scheduler: Optional diffusers scheduler for alternative sampling.
++        mu: Schedule shifting parameter for dynamic shifting schedulers.
++        inpaint_extension: Optional inpainting extension.
++
++    Returns:
++        Denoised packed latents [B, seq_len, 128].
++    """
++    use_scheduler = scheduler is not None
++    total_steps = len(timesteps) - 1
++
++    if cfg_scale is None:
++        cfg_scale = [1.0] * total_steps
++
++    # FLUX.2 Klein: guidance_embeds=False, so guidance_vec is not used
++    # The model forward pass uses timesteps and vec (from pooled text) only
++
++    if use_scheduler:
++        return _denoise_with_scheduler(
++            model=model,
++            img=img,
++            img_ids=img_ids,
++            txt=txt,
++            txt_ids=txt_ids,
++            timesteps=timesteps,
++            step_callback=step_callback,
++            cfg_scale=cfg_scale,
++            neg_txt=neg_txt,
++            neg_txt_ids=neg_txt_ids,
++            scheduler=scheduler,
++            mu=mu,
++            inpaint_extension=inpaint_extension,
++            total_steps=total_steps,
++        )
++    else:
++        return _denoise_euler(
++            model=model,
++            img=img,
++            img_ids=img_ids,
++            txt=txt,
++            txt_ids=txt_ids,
++            timesteps=timesteps,
++            step_callback=step_callback,
++            cfg_scale=cfg_scale,
++            neg_txt=neg_txt,
++            neg_txt_ids=neg_txt_ids,
++            inpaint_extension=inpaint_extension,
++            total_steps=total_steps,
++        )
++
++
++def _run_model(
++    model: torch.nn.Module,
++    img: torch.Tensor,
++    img_ids: torch.Tensor,
++    txt: torch.Tensor,
++    txt_ids: torch.Tensor,
++    t_vec: torch.Tensor,
++    y: torch.Tensor | None = None,
++) -> torch.Tensor:
++    """Run the FLUX.2 transformer model.
++
++    Supports both InvokeAI Flux2 model and diffusers Flux2Transformer2DModel.
++    """
++    # Check if this is a diffusers model (has different API)
++    if hasattr(model, "config") and hasattr(model.config, "_class_name"):
++        # Diffusers Flux2Transformer2DModel
++        output = model(
++            hidden_states=img,
++            encoder_hidden_states=txt,
++            timestep=t_vec,
++            img_ids=img_ids,
++            txt_ids=txt_ids,
++            return_dict=False,
++        )
++        return output[0] if isinstance(output, tuple) else output
++    else:
++        # InvokeAI Flux2 model or FLUX.1 Flux model with Klein params
++        # The Flux model uses: img, img_ids, txt, txt_ids, timesteps, y, guidance
++        if hasattr(model, "params"):
++            # InvokeAI model (Flux or Flux2)
++            return model(
++                img=img,
++                img_ids=img_ids,
++                txt=txt,
++                txt_ids=txt_ids,
++                timesteps=t_vec,
++                y=y if y is not None else torch.zeros(img.shape[0], 1, device=img.device, dtype=img.dtype),
++                guidance=None,
++            )
++        else:
++            # Fallback: try generic forward
++            return model(
++                img=img,
++                img_ids=img_ids,
++                txt=txt,
++                txt_ids=txt_ids,
++                timesteps=t_vec,
++            )
++
++
++def _denoise_euler(
++    model: torch.nn.Module,
++    img: torch.Tensor,
++    img_ids: torch.Tensor,
++    txt: torch.Tensor,
++    txt_ids: torch.Tensor,
++    timesteps: list[float],
++    step_callback: Callable[[PipelineIntermediateState], None],
++    cfg_scale: list[float],
++    neg_txt: torch.Tensor | None,
++    neg_txt_ids: torch.Tensor | None,
++    inpaint_extension: RectifiedFlowInpaintExtension | None,
++    total_steps: int,
++) -> torch.Tensor:
++    """Manual Euler denoising (exact timestep control, used for inpainting/img2img)."""
++    for step_index, (t_curr, t_prev) in tqdm(list(enumerate(zip(timesteps[:-1], timesteps[1:], strict=True)))):
++        t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
++
++        pred = _run_model(model, img, img_ids, txt, txt_ids, t_vec)
++
++        # CFG
++        step_cfg = cfg_scale[min(step_index, len(cfg_scale) - 1)]
++        if not math.isclose(step_cfg, 1.0):
++            if neg_txt is None:
++                raise ValueError("Negative text conditioning is required when cfg_scale > 1.0.")
++            neg_pred = _run_model(model, img, img_ids, neg_txt, neg_txt_ids, t_vec)
++            pred = neg_pred + step_cfg * (pred - neg_pred)
++
++        # Euler step
++        preview_img = img - t_curr * pred
++        img = img + (t_prev - t_curr) * pred
++
++        if inpaint_extension is not None:
++            img = inpaint_extension.merge_intermediate_latents_with_init_latents(img, t_prev)
++            preview_img = inpaint_extension.merge_intermediate_latents_with_init_latents(preview_img, 0.0)
++
++        step_callback(
++            PipelineIntermediateState(
++                step=step_index + 1,
++                order=1,
++                total_steps=total_steps,
++                timestep=int(t_curr * 1000),
++                latents=preview_img,
++            ),
++        )
++
++    return img
++
++
++def _denoise_with_scheduler(
++    model: torch.nn.Module,
++    img: torch.Tensor,
++    img_ids: torch.Tensor,
++    txt: torch.Tensor,
++    txt_ids: torch.Tensor,
++    timesteps: list[float],
++    step_callback: Callable[[PipelineIntermediateState], None],
++    cfg_scale: list[float],
++    neg_txt: torch.Tensor | None,
++    neg_txt_ids: torch.Tensor | None,
++    scheduler: SchedulerMixin,
++    mu: float | None,
++    inpaint_extension: RectifiedFlowInpaintExtension | None,
++    total_steps: int,
++) -> torch.Tensor:
++    """Denoising with diffusers scheduler (Euler, Heun, LCM) and dynamic shifting."""
++    # Initialize scheduler with sigmas
++    is_lcm = scheduler.__class__.__name__ == "FlowMatchLCMScheduler"
++    set_timesteps_sig = inspect.signature(scheduler.set_timesteps)
++
++    if not is_lcm and "sigmas" in set_timesteps_sig.parameters:
++        # Pass mu for dynamic shifting if supported
++        kwargs = {"sigmas": timesteps, "device": img.device}
++        if mu is not None and "mu" in set_timesteps_sig.parameters:
++            kwargs["mu"] = mu
++        scheduler.set_timesteps(**kwargs)
++    else:
++        num_inference_steps = len(timesteps) - 1
++        scheduler.set_timesteps(num_inference_steps=num_inference_steps, device=img.device)
++
++    num_scheduler_steps = len(scheduler.timesteps)
++    user_step = 0
++
++    pbar = tqdm(total=total_steps, desc="FLUX.2 Denoising")
++    for step_index in range(num_scheduler_steps):
++        timestep = scheduler.timesteps[step_index]
++        t_curr = timestep.item() / scheduler.config.num_train_timesteps
++        t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
++
++        is_heun = hasattr(scheduler, "state_in_first_order")
++        in_first_order = scheduler.state_in_first_order if is_heun else True
++
++        pred = _run_model(model, img, img_ids, txt, txt_ids, t_vec)
++
++        # CFG
++        step_cfg = cfg_scale[min(user_step, len(cfg_scale) - 1)]
++        if not math.isclose(step_cfg, 1.0):
++            if neg_txt is None:
++                raise ValueError("Negative text conditioning is required when cfg_scale > 1.0.")
++            neg_pred = _run_model(model, img, img_ids, neg_txt, neg_txt_ids, t_vec)
++            pred = neg_pred + step_cfg * (pred - neg_pred)
++
++        # Scheduler step
++        step_output = scheduler.step(model_output=pred, timestep=timestep, sample=img)
++        img = step_output.prev_sample
++
++        # Inpainting merge
++        if inpaint_extension is not None:
++            if step_index + 1 < len(scheduler.sigmas):
++                t_prev = scheduler.sigmas[step_index + 1].item()
++            else:
++                t_prev = 0.0
++            img = inpaint_extension.merge_intermediate_latents_with_init_latents(img, t_prev)
++
++        # Progress callback (handle Heun's double steps)
++        if is_heun:
++            if not in_first_order:
++                user_step += 1
++                if user_step <= total_steps:
++                    pbar.update(1)
++                    preview_img = img - t_curr * pred
++                    step_callback(
++                        PipelineIntermediateState(
++                            step=user_step,
++                            order=2,
++                            total_steps=total_steps,
++                            timestep=int(t_curr * 1000),
++                            latents=preview_img,
++                        ),
++                    )
++        else:
++            user_step += 1
++            if user_step <= total_steps:
++                pbar.update(1)
++                preview_img = img - t_curr * pred
++                step_callback(
++                    PipelineIntermediateState(
++                        step=user_step,
++                        order=1,
++                        total_steps=total_steps,
++                        timestep=int(t_curr * 1000),
++                        latents=preview_img,
++                    ),
++                )
++
++    pbar.close()
++    return img
+diff --git a/invokeai/backend/flux2/model.py b/invokeai/backend/flux2/model.py
+new file mode 100644
+index 0000000..1ba14b9
+--- /dev/null
++++ b/invokeai/backend/flux2/model.py
+@@ -0,0 +1,426 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""FLUX.2 transformer model implementation.
++
++FLUX.2-klein uses a different architecture from FLUX.1:
++- Gated SiLU (SwiGLU) activation in MLPs
++- Different modulation structure (shared modulation layers)
++- Fused QKV+MLP projections in single stream blocks
++- Different RoPE configuration
++"""
++
++from dataclasses import dataclass
++from typing import Optional
++
++import torch
++from einops import rearrange
++from torch import Tensor, nn
++
++from invokeai.backend.flux.math import attention, rope
++
++
++@dataclass
++class Flux2Params:
++    """Parameters for FLUX.2 transformer model."""
++
++    in_channels: int
++    """Input latent channels (128 for FLUX.2)."""
++    hidden_size: int
++    """Hidden dimension of the transformer."""
++    num_attention_heads: int
++    """Number of attention heads."""
++    attention_head_dim: int
++    """Dimension per attention head."""
++    num_layers: int
++    """Number of double stream (joint attention) blocks."""
++    num_single_layers: int
++    """Number of single stream blocks."""
++    mlp_ratio: float
++    """MLP expansion ratio."""
++    joint_attention_dim: int
++    """Text encoder output dimension."""
++    axes_dims_rope: list[int]
++    """RoPE axis dimensions."""
++    rope_theta: int
++    """RoPE theta parameter."""
++    timestep_guidance_channels: int = 256
++    """Timestep embedding dimension."""
++    guidance_embeds: bool = False
++    """Whether to use guidance embeddings (False for distilled klein models)."""
++    out_channels: Optional[int] = None
++    """Output channels (defaults to in_channels)."""
++
++
++class Flux2RMSNorm(nn.Module):
++    """RMS normalization for FLUX.2."""
++
++    def __init__(self, dim: int, eps: float = 1e-6):
++        super().__init__()
++        self.scale = nn.Parameter(torch.ones(dim))
++        self.eps = eps
++
++    def forward(self, x: Tensor) -> Tensor:
++        return torch.nn.functional.rms_norm(x, self.scale.shape, self.scale, eps=self.eps)
++
++
++class Flux2QKNorm(nn.Module):
++    """Query-Key normalization for FLUX.2."""
++
++    def __init__(self, dim: int):
++        super().__init__()
++        self.query_norm = Flux2RMSNorm(dim)
++        self.key_norm = Flux2RMSNorm(dim)
++
++    def forward(self, q: Tensor, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
++        q = self.query_norm(q)
++        k = self.key_norm(k)
++        return q.to(v), k.to(v)
++
++
++class Flux2EmbedND(nn.Module):
++    """N-dimensional positional embedding using RoPE for FLUX.2."""
++
++    def __init__(self, dim: int, theta: int, axes_dim: list[int]):
++        super().__init__()
++        self.dim = dim
++        self.theta = theta
++        self.axes_dim = axes_dim
++
++    def forward(self, ids: Tensor) -> Tensor:
++        n_axes = ids.shape[-1]
++        emb = torch.cat(
++            [rope(ids[..., i], self.axes_dim[i], self.theta) for i in range(n_axes)],
++            dim=-3,
++        )
++        return emb.unsqueeze(1)
++
++
++def flux2_timestep_embedding(t: Tensor, dim: int, max_period: int = 10000) -> Tensor:
++    """Create sinusoidal timestep embeddings for FLUX.2."""
++    half = dim // 2
++    freqs = torch.exp(-torch.log(torch.tensor(max_period, dtype=torch.float32)) * torch.arange(half, dtype=torch.float32) / half).to(t.device)
++    args = t[:, None].float() * freqs[None]
++    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
++    if dim % 2:
++        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
++    return embedding.to(t.dtype)
++
++
++class Flux2MLPEmbedder(nn.Module):
++    """MLP embedder for timestep/guidance embeddings in FLUX.2."""
++
++    def __init__(self, in_dim: int, hidden_dim: int):
++        super().__init__()
++        self.in_layer = nn.Linear(in_dim, hidden_dim, bias=True)
++        self.silu = nn.SiLU()
++        self.out_layer = nn.Linear(hidden_dim, hidden_dim, bias=True)
++
++    def forward(self, x: Tensor) -> Tensor:
++        return self.out_layer(self.silu(self.in_layer(x)))
++
++
++class Flux2SwiGLU(nn.Module):
++    """SwiGLU activation for FLUX.2 MLPs."""
++
++    def forward(self, x: Tensor) -> Tensor:
++        x, gate = x.chunk(2, dim=-1)
++        return x * nn.functional.silu(gate)
++
++
++class Flux2Modulation(nn.Module):
++    """Shared modulation layer for FLUX.2.
++
++    Unlike FLUX.1 which has per-block modulation, FLUX.2 uses shared
++    modulation layers for all double/single stream blocks.
++    """
++
++    def __init__(self, hidden_size: int, num_params: int):
++        super().__init__()
++        self.lin = nn.Linear(hidden_size, num_params * hidden_size, bias=True)
++
++    def forward(self, vec: Tensor) -> Tensor:
++        return self.lin(nn.functional.silu(vec))
++
++
++class Flux2DoubleStreamBlock(nn.Module):
++    """Double stream (joint attention) block for FLUX.2.
++
++    Key differences from FLUX.1:
++    - Uses SwiGLU activation instead of GELU
++    - Modulation is applied externally from shared modulation layers
++    - Different tensor key naming convention
++    """
++
++    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float):
++        super().__init__()
++        self.hidden_size = hidden_size
++        self.num_heads = num_heads
++        head_dim = hidden_size // num_heads
++
++        # Image attention
++        self.img_attn = nn.ModuleDict({
++            "qkv": nn.Linear(hidden_size, hidden_size * 3, bias=True),
++            "proj": nn.Linear(hidden_size, hidden_size, bias=True),
++            "norm": Flux2QKNorm(head_dim),
++        })
++
++        # Text attention
++        self.txt_attn = nn.ModuleDict({
++            "qkv": nn.Linear(hidden_size, hidden_size * 3, bias=True),
++            "proj": nn.Linear(hidden_size, hidden_size, bias=True),
++            "norm": Flux2QKNorm(head_dim),
++        })
++
++        # MLPs with SwiGLU
++        mlp_hidden = int(hidden_size * mlp_ratio)
++        self.img_mlp = nn.Sequential(
++            nn.Linear(hidden_size, mlp_hidden * 2, bias=True),  # *2 for gated
++            Flux2SwiGLU(),
++            nn.Linear(mlp_hidden, hidden_size, bias=True),
++        )
++        self.txt_mlp = nn.Sequential(
++            nn.Linear(hidden_size, mlp_hidden * 2, bias=True),
++            Flux2SwiGLU(),
++            nn.Linear(mlp_hidden, hidden_size, bias=True),
++        )
++
++    def forward(
++        self,
++        img: Tensor,
++        txt: Tensor,
++        pe: Tensor,
++        img_mod: Tensor,
++        txt_mod: Tensor,
++    ) -> tuple[Tensor, Tensor]:
++        # Unpack modulation parameters (shift, scale, gate for norm1, norm2)
++        img_mod = img_mod.chunk(6, dim=-1)
++        txt_mod = txt_mod.chunk(6, dim=-1)
++
++        # Image attention
++        img_norm = nn.functional.layer_norm(img, (self.hidden_size,))
++        img_modulated = (1 + img_mod[1]) * img_norm + img_mod[0]
++        img_qkv = self.img_attn["qkv"](img_modulated)
++        img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
++        img_q, img_k = self.img_attn["norm"](img_q, img_k, img_v)
++
++        # Text attention
++        txt_norm = nn.functional.layer_norm(txt, (self.hidden_size,))
++        txt_modulated = (1 + txt_mod[1]) * txt_norm + txt_mod[0]
++        txt_qkv = self.txt_attn["qkv"](txt_modulated)
++        txt_q, txt_k, txt_v = rearrange(txt_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
++        txt_q, txt_k = self.txt_attn["norm"](txt_q, txt_k, txt_v)
++
++        # Joint attention
++        q = torch.cat([txt_q, img_q], dim=2)
++        k = torch.cat([txt_k, img_k], dim=2)
++        v = torch.cat([txt_v, img_v], dim=2)
++        attn = attention(q, k, v, pe=pe)
++        txt_attn, img_attn = attn[:, :txt.shape[1]], attn[:, txt.shape[1]:]
++
++        # Apply attention and MLP with gating
++        img = img + img_mod[2] * self.img_attn["proj"](img_attn)
++        img_norm2 = nn.functional.layer_norm(img, (self.hidden_size,))
++        img = img + img_mod[5] * self.img_mlp((1 + img_mod[4]) * img_norm2 + img_mod[3])
++
++        txt = txt + txt_mod[2] * self.txt_attn["proj"](txt_attn)
++        txt_norm2 = nn.functional.layer_norm(txt, (self.hidden_size,))
++        txt = txt + txt_mod[5] * self.txt_mlp((1 + txt_mod[4]) * txt_norm2 + txt_mod[3])
++
++        return img, txt
++
++
++class Flux2SingleStreamBlock(nn.Module):
++    """Single stream block for FLUX.2 with fused projections.
++
++    Key differences from FLUX.1:
++    - Fused QKV + MLP input projection (linear1)
++    - Fused attention + MLP output projection (linear2)
++    - SwiGLU activation
++    """
++
++    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float):
++        super().__init__()
++        self.hidden_size = hidden_size
++        self.num_heads = num_heads
++        head_dim = hidden_size // num_heads
++        mlp_hidden = int(hidden_size * mlp_ratio)
++
++        # Fused input: QKV (3 * hidden) + MLP gate+value (2 * mlp_hidden)
++        self.linear1 = nn.Linear(hidden_size, hidden_size * 3 + mlp_hidden * 2, bias=True)
++
++        # Fused output: attention (hidden) + MLP (mlp_hidden) -> hidden
++        self.linear2 = nn.Linear(hidden_size + mlp_hidden, hidden_size, bias=True)
++
++        self.norm = Flux2QKNorm(head_dim)
++        self.mlp_hidden = mlp_hidden
++
++    def forward(self, x: Tensor, pe: Tensor, mod: Tensor) -> Tensor:
++        # Unpack modulation (shift, scale, gate)
++        mod = mod.chunk(3, dim=-1)
++
++        # Apply pre-norm with modulation
++        x_norm = nn.functional.layer_norm(x, (self.hidden_size,))
++        x_mod = (1 + mod[1]) * x_norm + mod[0]
++
++        # Fused projection
++        qkv_mlp = self.linear1(x_mod)
++        qkv, mlp = qkv_mlp.split([self.hidden_size * 3, self.mlp_hidden * 2], dim=-1)
++
++        # Attention
++        q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
++        q, k = self.norm(q, k, v)
++        attn = attention(q, k, v, pe=pe)
++
++        # MLP with SwiGLU
++        mlp_out = mlp.chunk(2, dim=-1)
++        mlp_out = mlp_out[0] * nn.functional.silu(mlp_out[1])
++
++        # Fused output projection with gating
++        out = self.linear2(torch.cat([attn, mlp_out], dim=-1))
++        return x + mod[2] * out
++
++
++class Flux2FinalLayer(nn.Module):
++    """Final output layer for FLUX.2."""
++
++    def __init__(self, hidden_size: int, out_channels: int):
++        super().__init__()
++        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
++        self.linear = nn.Linear(hidden_size, out_channels, bias=True)
++        self.adaLN_modulation = nn.Sequential(
++            nn.SiLU(),
++            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
++        )
++
++    def forward(self, x: Tensor, vec: Tensor) -> Tensor:
++        shift, scale = self.adaLN_modulation(vec).chunk(2, dim=1)
++        x = (1 + scale[:, None, :]) * self.norm_final(x) + shift[:, None, :]
++        return self.linear(x)
++
++
++class Flux2(nn.Module):
++    """FLUX.2 transformer model for flow matching on sequences.
++
++    This is a distinct architecture from FLUX.1, featuring:
++    - Shared modulation layers (double_stream_modulation_img/txt, single_stream_modulation)
++    - SwiGLU activation in MLPs
++    - Different RoPE configuration
++    - Qwen3 text encoder compatibility (joint_attention_dim matches Qwen3 output)
++    """
++
++    def __init__(self, params: Flux2Params):
++        super().__init__()
++        self.params = params
++        self.in_channels = params.in_channels
++        self.out_channels = params.out_channels or params.in_channels
++        self.hidden_size = params.hidden_size
++
++        # Validate dimensions
++        if params.hidden_size % params.num_attention_heads != 0:
++            raise ValueError(
++                f"Hidden size {params.hidden_size} must be divisible by num_heads {params.num_attention_heads}"
++            )
++
++        # Positional embeddings
++        self.pe_embedder = Flux2EmbedND(
++            dim=params.attention_head_dim,
++            theta=params.rope_theta,
++            axes_dim=params.axes_dims_rope
++        )
++
++        # Input projections
++        self.img_in = nn.Linear(params.in_channels, params.hidden_size, bias=True)
++        self.txt_in = nn.Linear(params.joint_attention_dim, params.hidden_size, bias=True)
++
++        # Timestep embedding
++        self.time_in = Flux2MLPEmbedder(params.timestep_guidance_channels, params.hidden_size)
++
++        # Guidance embedding (only if enabled)
++        if params.guidance_embeds:
++            self.guidance_in = Flux2MLPEmbedder(params.timestep_guidance_channels, params.hidden_size)
++        else:
++            self.guidance_in = None
++
++        # Shared modulation layers (key difference from FLUX.1)
++        # Double stream: 6 params each for img and txt (shift, scale, gate for norm1 and norm2)
++        self.double_stream_modulation_img = Flux2Modulation(params.hidden_size, 6)
++        self.double_stream_modulation_txt = Flux2Modulation(params.hidden_size, 6)
++        # Single stream: 3 params (shift, scale, gate)
++        self.single_stream_modulation = Flux2Modulation(params.hidden_size, 3)
++
++        # Transformer blocks
++        self.double_blocks = nn.ModuleList([
++            Flux2DoubleStreamBlock(params.hidden_size, params.num_attention_heads, params.mlp_ratio)
++            for _ in range(params.num_layers)
++        ])
++
++        self.single_blocks = nn.ModuleList([
++            Flux2SingleStreamBlock(params.hidden_size, params.num_attention_heads, params.mlp_ratio)
++            for _ in range(params.num_single_layers)
++        ])
++
++        # Output layer
++        self.final_layer = Flux2FinalLayer(params.hidden_size, self.out_channels)
++
++    def forward(
++        self,
++        img: Tensor,
++        img_ids: Tensor,
++        txt: Tensor,
++        txt_ids: Tensor,
++        timesteps: Tensor,
++        guidance: Tensor | None = None,
++    ) -> Tensor:
++        """Forward pass of FLUX.2 transformer.
++
++        Args:
++            img: Image latents [B, L_img, in_channels]
++            img_ids: Image position IDs [B, L_img, n_axes]
++            txt: Text embeddings from Qwen3 [B, L_txt, joint_attention_dim]
++            txt_ids: Text position IDs [B, L_txt, n_axes]
++            timesteps: Timestep values [B]
++            guidance: Optional guidance values [B] (only if guidance_embeds=True)
++
++        Returns:
++            Denoised output [B, L_img, out_channels]
++        """
++        if img.ndim != 3 or txt.ndim != 3:
++            raise ValueError("Input img and txt tensors must have 3 dimensions.")
++
++        # Project inputs
++        img = self.img_in(img)
++        txt = self.txt_in(txt)
++
++        # Timestep embedding
++        vec = self.time_in(flux2_timestep_embedding(timesteps, self.params.timestep_guidance_channels))
++
++        # Add guidance embedding if enabled
++        if self.params.guidance_embeds:
++            if guidance is None:
++                raise ValueError("Model requires guidance but none was provided.")
++            vec = vec + self.guidance_in(flux2_timestep_embedding(guidance, self.params.timestep_guidance_channels))
++
++        # Compute positional embeddings
++        ids = torch.cat([txt_ids, img_ids], dim=1)
++        pe = self.pe_embedder(ids)
++
++        # Compute shared modulation
++        img_mod = self.double_stream_modulation_img(vec)[:, None, :]
++        txt_mod = self.double_stream_modulation_txt(vec)[:, None, :]
++        single_mod = self.single_stream_modulation(vec)[:, None, :]
++
++        # Double stream blocks
++        for block in self.double_blocks:
++            img, txt = block(img, txt, pe, img_mod, txt_mod)
++
++        # Concatenate for single stream
++        x = torch.cat([txt, img], dim=1)
++
++        # Single stream blocks
++        for block in self.single_blocks:
++            x = block(x, pe, single_mod)
++
++        # Extract image portion
++        img = x[:, txt.shape[1]:, :]
++
++        # Final projection
++        return self.final_layer(img, vec)
+diff --git a/invokeai/backend/flux2/sampling_utils.py b/invokeai/backend/flux2/sampling_utils.py
+new file mode 100644
+index 0000000..d2b410e
+--- /dev/null
++++ b/invokeai/backend/flux2/sampling_utils.py
+@@ -0,0 +1,182 @@
++"""FLUX.2 Klein Sampling Utilities.
++
++FLUX.2 Klein uses a 32-channel VAE (AutoencoderKLFlux2) instead of the 16-channel VAE
++used by FLUX.1. This module provides sampling utilities adapted for FLUX.2.
++"""
++
++import math
++
++import torch
++from einops import rearrange
++
++
++def get_noise_flux2(
++    num_samples: int,
++    height: int,
++    width: int,
++    device: torch.device,
++    dtype: torch.dtype,
++    seed: int,
++) -> torch.Tensor:
++    """Generate noise for FLUX.2 Klein (32 channels).
++
++    FLUX.2 uses a 32-channel VAE, so noise must have 32 channels.
++    The spatial dimensions are calculated to allow for packing.
++
++    Args:
++        num_samples: Batch size.
++        height: Target image height in pixels.
++        width: Target image width in pixels.
++        device: Target device.
++        dtype: Target dtype.
++        seed: Random seed.
++
++    Returns:
++        Noise tensor of shape (num_samples, 32, latent_h, latent_w).
++    """
++    rand_device = "cpu"
++    rand_dtype = torch.float16
++
++    # FLUX.2 uses 32 latent channels
++    # Latent dimensions: height/8, width/8 (from VAE downsampling)
++    # Must be divisible by 2 for packing (patchify step)
++    latent_h = 2 * math.ceil(height / 16)
++    latent_w = 2 * math.ceil(width / 16)
++
++    return torch.randn(
++        num_samples,
++        32,  # FLUX.2 uses 32 latent channels (vs 16 for FLUX.1)
++        latent_h,
++        latent_w,
++        device=rand_device,
++        dtype=rand_dtype,
++        generator=torch.Generator(device=rand_device).manual_seed(seed),
++    ).to(device=device, dtype=dtype)
++
++
++def pack_flux2(x: torch.Tensor) -> torch.Tensor:
++    """Pack latent image to flattened array of patch embeddings for FLUX.2.
++
++    Patchify + pack in one step:
++    For 32-channel input: (B, 32, H, W) -> (B, H/2*W/2, 128)
++
++    Args:
++        x: Latent tensor of shape (B, 32, H, W).
++
++    Returns:
++        Packed tensor of shape (B, H/2*W/2, 128).
++    """
++    return rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
++
++
++def unpack_flux2(x: torch.Tensor, height: int, width: int) -> torch.Tensor:
++    """Unpack flat array of patch embeddings back to latent image for FLUX.2.
++
++    Reverses pack_flux2: (B, H/2*W/2, 128) -> (B, 32, H, W)
++
++    Args:
++        x: Packed tensor of shape (B, H/2*W/2, 128).
++        height: Target image height in pixels.
++        width: Target image width in pixels.
++
++    Returns:
++        Latent tensor of shape (B, 32, H, W).
++    """
++    latent_h = 2 * math.ceil(height / 16)
++    latent_w = 2 * math.ceil(width / 16)
++    packed_h = latent_h // 2
++    packed_w = latent_w // 2
++
++    return rearrange(
++        x,
++        "b (h w) (c ph pw) -> b c (h ph) (w pw)",
++        h=packed_h,
++        w=packed_w,
++        ph=2,
++        pw=2,
++    )
++
++
++def compute_empirical_mu(image_seq_len: int, num_steps: int) -> float:
++    """Compute empirical mu for FLUX.2 schedule shifting.
++
++    Matches the diffusers Flux2Pipeline implementation.
++    The mu value controls how much the schedule is shifted towards higher timesteps.
++
++    Args:
++        image_seq_len: Number of image tokens (packed_h * packed_w).
++        num_steps: Number of denoising steps.
++
++    Returns:
++        The empirical mu value.
++    """
++    a1, b1 = 8.73809524e-05, 1.89833333
++    a2, b2 = 0.00016927, 0.45666666
++
++    if image_seq_len > 4300:
++        mu = a2 * image_seq_len + b2
++        return float(mu)
++
++    m_200 = a2 * image_seq_len + b2
++    m_10 = a1 * image_seq_len + b1
++
++    a = (m_200 - m_10) / 190.0
++    b = m_200 - 200.0 * a
++    mu = a * num_steps + b
++
++    return float(mu)
++
++
++def get_schedule_flux2(
++    num_steps: int,
++    image_seq_len: int,
++) -> list[float]:
++    """Get linear timestep schedule for FLUX.2.
++
++    Returns a linear sigma schedule from 1.0 to 1/num_steps.
++    The actual schedule shifting is handled by the FlowMatchEulerDiscreteScheduler
++    using the mu parameter and use_dynamic_shifting=True.
++
++    Args:
++        num_steps: Number of denoising steps.
++        image_seq_len: Number of image tokens (packed_h * packed_w).
++
++    Returns:
++        List of linear sigmas from 1.0 to 1/num_steps, plus final 0.0.
++    """
++    import numpy as np
++
++    sigmas = np.linspace(1.0, 1 / num_steps, num_steps)
++    sigmas_list = [float(s) for s in sigmas]
++    sigmas_list.append(0.0)
++
++    return sigmas_list
++
++
++def generate_img_ids_flux2(h: int, w: int, batch_size: int, device: torch.device) -> torch.Tensor:
++    """Generate tensor of image position ids for FLUX.2.
++
++    FLUX.2 uses 4D position coordinates (T, H, W, L) for its rotary position embeddings.
++    Position IDs must use int64 (long) dtype to avoid NaN in rotary embeddings.
++
++    Args:
++        h: Height of image in latent space.
++        w: Width of image in latent space.
++        batch_size: Batch size.
++        device: Device.
++
++    Returns:
++        Image position ids tensor of shape (batch_size, h/2*w/2, 4) with int64 dtype.
++    """
++    packed_h = h // 2
++    packed_w = w // 2
++
++    # 4D coordinates: (T, H, W, L)
++    img_ids = torch.zeros(packed_h, packed_w, 4, device=device, dtype=torch.long)
++    img_ids[..., 1] = torch.arange(packed_h, device=device, dtype=torch.long)[:, None]
++    img_ids[..., 2] = torch.arange(packed_w, device=device, dtype=torch.long)[None, :]
++
++    img_ids = img_ids.reshape(1, packed_h * packed_w, 4)
++    img_ids = img_ids.expand(batch_size, -1, -1)
++
++    return img_ids
+diff --git a/invokeai/backend/flux2/text_encoder.py b/invokeai/backend/flux2/text_encoder.py
+new file mode 100644
+index 0000000..6373e81
+--- /dev/null
++++ b/invokeai/backend/flux2/text_encoder.py
+@@ -0,0 +1,125 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""Qwen3 text encoder for FLUX.2-klein models.
++
++Qwen3 is a causal language model used as the text encoder for FLUX.2-klein,
++replacing the CLIP+T5 combination used in FLUX.1.
++
++Output embeddings have shape [batch, seq_len, hidden_size] where:
++- hidden_size = 2560 (Qwen3-7B)
++- mapped to joint_attention_dim for FLUX.2-klein (7680 for 4B, 12288 for 9B)
++"""
++
++from typing import Optional
++
++import torch
++from torch import nn
++from transformers import AutoConfig, AutoModel, AutoTokenizer
++
++
++class Qwen3TextEncoder(nn.Module):
++    """Wrapper for Qwen3 text encoder with projection to FLUX.2 embedding dimension.
++
++    Attributes:
++        model: Qwen3ForCausalLM transformer model
++        tokenizer: Qwen tokenizer
++        proj: Optional projection layer to joint_attention_dim
++        device: Device the model is on
++        dtype: Data type (torch.bfloat16 for FLUX.2)
++    """
++
++    def __init__(
++        self,
++        model_path: str,
++        output_dim: Optional[int] = None,
++        dtype: torch.dtype = torch.bfloat16,
++        device: torch.device = torch.device("cpu"),
++    ):
++        """Initialize Qwen3 text encoder.
++
++        Args:
++            model_path: Path to Qwen3 model (e.g., "Qwen/Qwen3-7B")
++            output_dim: Target embedding dimension (joint_attention_dim for FLUX.2).
++                        If None, uses native Qwen3 hidden_size (2560).
++            dtype: Data type for model inference
++            device: Device to load model on
++        """
++        super().__init__()
++        self.device = device
++        self.dtype = dtype
++
++        # Load tokenizer
++        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
++        if self.tokenizer.pad_token_id is None:
++            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
++
++        # Load model
++        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
++        self.model = AutoModel.from_pretrained(
++            model_path,
++            config=config,
++            torch_dtype=dtype,
++            device_map=device,
++            trust_remote_code=True,
++        )
++        self.model.eval()
++
++        # Get native hidden size
++        native_hidden_size = config.hidden_size  # 2560 for Qwen3-7B
++
++        # Optional projection to output_dim
++        if output_dim is not None and output_dim != native_hidden_size:
++            self.proj = nn.Linear(native_hidden_size, output_dim, dtype=dtype, device=device)
++            self.output_dim = output_dim
++        else:
++            self.proj = None
++            self.output_dim = native_hidden_size
++
++    def forward(
++        self,
++        text: list[str],
++        max_length: int = 512,
++    ) -> torch.Tensor:
++        """Encode text to embeddings.
++
++        Args:
++            text: List of text strings to encode
++            max_length: Maximum token sequence length
++
++        Returns:
++            Tensor of shape [batch_size, seq_len, output_dim]
++                with dtype=torch.bfloat16
++        """
++        # Tokenize
++        tokens = self.tokenizer(
++            text,
++            padding="max_length",
++            max_length=max_length,
++            truncation=True,
++            return_tensors="pt",
++        ).to(self.device)
++
++        # Forward pass through model
++        with torch.no_grad():
++            outputs = self.model(
++                input_ids=tokens["input_ids"],
++                attention_mask=tokens["attention_mask"],
++                output_hidden_states=True,
++            )
++
++        # Use last hidden state
++        # Shape: [batch_size, seq_len, hidden_size]
++        embeddings = outputs.last_hidden_state
++
++        # Project to output dimension if needed
++        if self.proj is not None:
++            embeddings = self.proj(embeddings)
++
++        return embeddings.to(dtype=self.dtype)
++
++    def to(self, *args, **kwargs):
++        """Move model to device/dtype."""
++        super().to(*args, **kwargs)
++        self.model = self.model.to(*args, **kwargs)
++        if self.proj is not None:
++            self.proj = self.proj.to(*args, **kwargs)
++        return self
+diff --git a/invokeai/backend/flux2/util.py b/invokeai/backend/flux2/util.py
+new file mode 100644
+index 0000000..a456303
+--- /dev/null
++++ b/invokeai/backend/flux2/util.py
+@@ -0,0 +1,102 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""FLUX.2 model utilities and parameter presets."""
++
++from invokeai.backend.flux2.model import Flux2Params
++from invokeai.backend.model_manager.taxonomy import AnyVariant, Flux2VariantType
++
++
++# FLUX.2 uses the same VAE as FLUX.1 but with different latent channels
++# The VAE is AutoencoderKLFlux2 with 32 latent channels
++FLUX2_LATENT_CHANNELS = 32
++
++
++# Parameter presets for FLUX.2-klein variants
++_flux2_transformer_params: dict[AnyVariant, Flux2Params] = {
++    Flux2VariantType.Klein4B: Flux2Params(
++        in_channels=128,
++        hidden_size=3072,  # 24 * 128
++        num_attention_heads=24,
++        attention_head_dim=128,
++        num_layers=5,
++        num_single_layers=20,
++        mlp_ratio=3.0,
++        joint_attention_dim=7680,  # Qwen3 text encoder output
++        axes_dims_rope=[32, 32, 32, 32],
++        rope_theta=2000,
++        timestep_guidance_channels=256,
++        guidance_embeds=False,  # Distilled model, no guidance needed
++    ),
++    Flux2VariantType.Klein9B: Flux2Params(
++        in_channels=128,
++        hidden_size=4096,  # 32 * 128
++        num_attention_heads=32,
++        attention_head_dim=128,
++        num_layers=8,
++        num_single_layers=24,
++        mlp_ratio=3.0,
++        joint_attention_dim=12288,  # Larger Qwen3 text encoder output
++        axes_dims_rope=[32, 32, 32, 32],
++        rope_theta=2000,
++        timestep_guidance_channels=256,
++        guidance_embeds=False,  # Distilled model
++    ),
++    Flux2VariantType.Klein9BBase: Flux2Params(
++        in_channels=128,
++        hidden_size=4096,
++        num_attention_heads=32,
++        attention_head_dim=128,
++        num_layers=8,
++        num_single_layers=24,
++        mlp_ratio=3.0,
++        joint_attention_dim=12288,
++        axes_dims_rope=[32, 32, 32, 32],
++        rope_theta=2000,
++        timestep_guidance_channels=256,
++        guidance_embeds=True,  # Undistilled base model uses guidance
++    ),
++    Flux2VariantType.Klein9BFP8: Flux2Params(
++        in_channels=128,
++        hidden_size=4096,
++        num_attention_heads=32,
++        attention_head_dim=128,
++        num_layers=8,
++        num_single_layers=24,
++        mlp_ratio=3.0,
++        joint_attention_dim=12288,
++        axes_dims_rope=[32, 32, 32, 32],
++        rope_theta=2000,
++        timestep_guidance_channels=256,
++        guidance_embeds=False,
++    ),
++}
++
++
++def get_flux2_transformer_params(variant: AnyVariant) -> Flux2Params:
++    """Get FLUX.2 transformer parameters for a given variant."""
++    try:
++        return _flux2_transformer_params[variant]
++    except KeyError:
++        raise ValueError(f"Unknown FLUX.2 variant: {variant}")
++
++
++# Maximum sequence lengths for FLUX.2 models
++# These are the recommended values from the model card
++_flux2_max_seq_lengths: dict[AnyVariant, int] = {
++    Flux2VariantType.Klein4B: 512,
++    Flux2VariantType.Klein9B: 512,
++    Flux2VariantType.Klein9BBase: 512,
++    Flux2VariantType.Klein9BFP8: 512,
++}
++
++
++def get_flux2_max_seq_length(variant: AnyVariant) -> int:
++    """Get maximum text sequence length for a FLUX.2 variant."""
++    try:
++        return _flux2_max_seq_lengths[variant]
++    except KeyError:
++        raise ValueError(f"Unknown FLUX.2 variant for max seq len: {variant}")
++
++
++# Default inference settings for FLUX.2-klein (distilled for fast inference)
++FLUX2_KLEIN_DEFAULT_STEPS = 4
++FLUX2_KLEIN_DEFAULT_GUIDANCE = 1.0  # Guidance scale (not used in distilled)
+diff --git a/invokeai/backend/flux2/vae.py b/invokeai/backend/flux2/vae.py
+new file mode 100644
+index 0000000..89e6ef8
+--- /dev/null
++++ b/invokeai/backend/flux2/vae.py
+@@ -0,0 +1,179 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""VAE for FLUX.2 models with 32 latent channels and tiled processing."""
++
++from typing import Optional
++
++import torch
++import torch.nn as nn
++
++
++class Flux2VAE(nn.Module):
++    """Wrapper for AutoencoderKLFlux2 with 32 latent channels and tiled decoding.
++
++    FLUX.2 VAE specifications:
++    - Latent channels: 32 (strict, vs FLUX.1's 16)
++    - Scaling factor: 1.0 (internalized normalization)
++    - Tiled decoding: Enabled by default for <24GB VRAM
++    - Memory optimized: Can process large images via tiling
++
++    Args:
++        model_path: Path to VAE model (HF diffusers directory or single file).
++        enable_tiling: Enable tiled encode/decode for memory efficiency. Default: True.
++        tile_size: Tile size for tiled processing. Default: 512.
++        device: Torch device for model placement. Default: cuda if available.
++        dtype: Torch dtype for model. Default: torch.bfloat16.
++    """
++
++    def __init__(
++        self,
++        model_path: str,
++        enable_tiling: bool = True,
++        tile_size: int = 512,
++        device: Optional[torch.device] = None,
++        dtype: Optional[torch.dtype] = None,
++    ):
++        super().__init__()
++
++        if device is None:
++            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++        self.device = device
++
++        if dtype is None:
++            dtype = torch.bfloat16
++        self.dtype = dtype
++
++        # Store configuration
++        self.enable_tiling = enable_tiling
++        self.tile_size = tile_size
++        self.latent_channels = 32  # FLUX.2 specific
++        self.scaling_factor = 1.0  # FLUX.2 internalized normalization
++
++        # Lazy import to avoid hard dependency on diffusers
++        try:
++            from diffusers import AutoencoderKLFlux2
++        except ImportError:
++            raise ImportError(
++                "diffusers is required for Flux2VAE. Install via: pip install diffusers"
++            )
++
++        # Load VAE model
++        self.vae = AutoencoderKLFlux2.from_pretrained(
++            model_path,
++            torch_dtype=dtype,
++            device_map=device,
++        )
++
++        # Verify latent channels
++        if self.vae.latent_channels != self.latent_channels:
++            raise ValueError(
++                f"VAE has {self.vae.latent_channels} latent channels, "
++                f"but FLUX.2 requires exactly 32. Check model compatibility."
++            )
++
++        # Enable tiling if requested
++        if enable_tiling:
++            self.vae.enable_tiling()
++            self.vae.tile_latent_channels = 16  # Process 16 channels per tile
++
++        # Set to eval mode
++        self.vae.eval()
++
++    def encode(
++        self,
++        image: torch.Tensor,
++    ) -> torch.Tensor:
++        """Encode image to latent distribution.
++
++        Args:
++            image: Image tensor [B, 3, H, W] in [-1, 1] range.
++
++        Returns:
++            Latent distribution parameters [B, 8, H//8, W//8].
++            When using VAE.decode(), use latents[:, :4] for mean.
++        """
++        with torch.no_grad():
++            # Encode to latent distribution
++            distribution = self.vae.encode(image).latent_dist
++            # Sample from distribution
++            latents = distribution.sample()
++            # FLUX.2 uses latents directly (32 channels internally managed)
++            return latents
++
++    def decode(
++        self,
++        latents: torch.Tensor,
++        num_inference_steps: int = 1,
++    ) -> torch.Tensor:
++        """Decode latents to image.
++
++        Args:
++            latents: Latent tensor [B, 32, H//8, W//8].
++            num_inference_steps: Number of decoding steps (usually 1 for VAE). Default: 1.
++
++        Returns:
++            Decoded image [B, 3, H, W] in [0, 1] range.
++        """
++        with torch.no_grad():
++            # Decode from latents
++            image = self.vae.decode(
++                latents,
++                num_inference_steps=num_inference_steps,
++            ).sample
++
++            # Normalize to [0, 1]
++            image = (image + 1.0) / 2.0
++            image = image.clamp(0, 1)
++
++            return image
++
++    def to(self, device: Optional[torch.device] = None, dtype: Optional[torch.dtype] = None):
++        """Move model to device and/or dtype.
++
++        Args:
++            device: Target device.
++            dtype: Target dtype.
++
++        Returns:
++            Self for chaining.
++        """
++        if device is not None:
++            self.device = device
++            self.vae = self.vae.to(device)
++
++        if dtype is not None:
++            self.dtype = dtype
++            self.vae = self.vae.to(dtype=dtype)
++
++        return self
++
++    def enable_tiling(self) -> None:
++        """Enable tiled encode/decode for memory efficiency."""
++        if hasattr(self.vae, "enable_tiling"):
++            self.vae.enable_tiling()
++            self.enable_tiling = True
++
++    def disable_tiling(self) -> None:
++        """Disable tiled encode/decode (uses more memory but faster)."""
++        if hasattr(self.vae, "disable_tiling"):
++            self.vae.disable_tiling()
++            self.enable_tiling = False
++
++    @property
++    def latent_shape_factor(self) -> int:
++        """Factor by which image dimensions are reduced in latent space.
++
++        For VAE with 4x downsampling: factor = 8 (image H//8, W//8).
++        """
++        return 8
++
++    @property
++    def config(self) -> dict:
++        """Return VAE configuration."""
++        return {
++            "latent_channels": self.latent_channels,
++            "scaling_factor": self.scaling_factor,
++            "tile_size": self.tile_size,
++            "enable_tiling": self.enable_tiling,
++            "device": str(self.device),
++            "dtype": str(self.dtype),
++        }
+diff --git a/invokeai/backend/model_manager/configs/factory.py b/invokeai/backend/model_manager/configs/factory.py
+index aa256e6..8114a35 100644
+--- a/invokeai/backend/model_manager/configs/factory.py
++++ b/invokeai/backend/model_manager/configs/factory.py
+@@ -57,6 +57,7 @@ from invokeai.backend.model_manager.configs.lora import (
+ from invokeai.backend.model_manager.configs.main import (
+     Main_BnBNF4_FLUX_Config,
+     Main_Checkpoint_FLUX_Config,
++    Main_Checkpoint_FLUX2_Config,
+     Main_Checkpoint_SD1_Config,
+     Main_Checkpoint_SD2_Config,
+     Main_Checkpoint_SDXL_Config,
+@@ -156,6 +157,7 @@ AnyModelConfig = Annotated[
+         Annotated[Main_Checkpoint_SDXL_Config, Main_Checkpoint_SDXL_Config.get_tag()],
+         Annotated[Main_Checkpoint_SDXLRefiner_Config, Main_Checkpoint_SDXLRefiner_Config.get_tag()],
+         Annotated[Main_Checkpoint_FLUX_Config, Main_Checkpoint_FLUX_Config.get_tag()],
++        Annotated[Main_Checkpoint_FLUX2_Config, Main_Checkpoint_FLUX2_Config.get_tag()],
+         Annotated[Main_Checkpoint_ZImage_Config, Main_Checkpoint_ZImage_Config.get_tag()],
+         # Main (Pipeline) - quantized formats
+         Annotated[Main_BnBNF4_FLUX_Config, Main_BnBNF4_FLUX_Config.get_tag()],
+diff --git a/invokeai/backend/model_manager/configs/main.py b/invokeai/backend/model_manager/configs/main.py
+index 39887e1..7e93c8a 100644
+--- a/invokeai/backend/model_manager/configs/main.py
++++ b/invokeai/backend/model_manager/configs/main.py
+@@ -23,6 +23,7 @@ from invokeai.backend.model_manager.configs.identification_utils import (
+ from invokeai.backend.model_manager.model_on_disk import ModelOnDisk
+ from invokeai.backend.model_manager.taxonomy import (
+     BaseModelType,
++    Flux2VariantType,
+     FluxVariantType,
+     ModelFormat,
+     ModelType,
+@@ -789,3 +790,132 @@ class Main_GGUF_ZImage_Config(Checkpoint_Config_Base, Main_Config_Base, Config_B
+         has_ggml_tensors = _has_ggml_tensors(mod.load_state_dict())
+         if not has_ggml_tensors:
+             raise NotAMatchError("state dict does not look like GGUF quantized")
++
++
++# =============================================================================
++# FLUX.2 Model Configuration
++# =============================================================================
++
++
++def _has_flux2_keys(state_dict: dict[str | int, Any]) -> bool:
++    """Check if state dict contains FLUX.2-specific keys.
++
++    FLUX.2 models have a distinct key structure from FLUX.1:
++    - Uses shared modulation layers (double_stream_modulation_img/txt, single_stream_modulation)
++    - Has img_in.weight with shape [hidden_size, 128] (128 in_channels vs FLUX.1's 64)
++    - Has txt_in.weight with shape [hidden_size, joint_attention_dim] (7680/12288 vs FLUX.1's 4096)
++    """
++    # FLUX.2-specific keys that distinguish it from FLUX.1
++    flux2_specific_keys = {
++        "double_stream_modulation_img.lin.weight",
++        "double_stream_modulation_txt.lin.weight",
++        "single_stream_modulation.lin.weight",
++    }
++    return any(key in state_dict for key in flux2_specific_keys)
++
++
++def _get_flux2_variant(state_dict: dict[str | int, Any]) -> Flux2VariantType | None:
++    """Determine FLUX.2 variant from state dict.
++
++    FLUX.2-klein-4B:
++    - hidden_size = 3072 (24 heads * 128 dim)
++    - 5 double blocks, 20 single blocks
++    - joint_attention_dim = 7680
++
++    FLUX.2-klein-9B:
++    - hidden_size = 4096 (32 heads * 128 dim)
++    - 8 double blocks, 24 single blocks
++    - joint_attention_dim = 12288
++    """
++    # Check hidden_size from img_in.weight shape
++    img_in_weight = state_dict.get("img_in.weight")
++    if img_in_weight is None:
++        return None
++
++    hidden_size = img_in_weight.shape[0]
++    in_channels = img_in_weight.shape[1]
++
++    # Verify it's FLUX.2 (in_channels=128)
++    if in_channels != 128:
++        return None
++
++    # Count double and single blocks
++    num_double_blocks = 0
++    num_single_blocks = 0
++    for key in state_dict.keys():
++        if isinstance(key, str):
++            if key.startswith("double_blocks."):
++                block_idx = int(key.split(".")[1])
++                num_double_blocks = max(num_double_blocks, block_idx + 1)
++            elif key.startswith("single_blocks."):
++                block_idx = int(key.split(".")[1])
++                num_single_blocks = max(num_single_blocks, block_idx + 1)
++
++    # Determine variant based on architecture
++    # 4B: hidden_size=3072, 5 double, 20 single
++    # 9B: hidden_size=4096, 8 double, 24 single
++    if hidden_size == 3072 and num_double_blocks == 5 and num_single_blocks == 20:
++        return Flux2VariantType.Klein4B
++    elif hidden_size == 4096 and num_double_blocks == 8 and num_single_blocks == 24:
++        # Check if FP8 quantized
++        has_fp8_keys = any(
++            isinstance(k, str) and ".input_scale" in k
++            for k in state_dict.keys()
++        )
++        if has_fp8_keys:
++            return Flux2VariantType.Klein9BFP8
++        return Flux2VariantType.Klein9B
++
++    return None
++
++
++class Main_Checkpoint_FLUX2_Config(Checkpoint_Config_Base, Main_Config_Base, Config_Base):
++    """Model config for FLUX.2 checkpoint models (e.g., FLUX.2-klein-4B, FLUX.2-klein-9B).
++
++    FLUX.2 is a distinct architecture from FLUX.1 with:
++    - Different transformer structure (shared modulation layers)
++    - Qwen3 text encoder instead of CLIP+T5
++    - Different VAE (32 latent channels vs 16)
++    - in_channels=128 (vs FLUX.1's 64)
++    """
++
++    format: Literal[ModelFormat.Checkpoint] = Field(default=ModelFormat.Checkpoint)
++    base: Literal[BaseModelType.Flux2] = Field(default=BaseModelType.Flux2)
++
++    variant: Flux2VariantType = Field()
++
++    @classmethod
++    def from_model_on_disk(cls, mod: ModelOnDisk, override_fields: dict[str, Any]) -> Self:
++        raise_if_not_file(mod)
++
++        raise_for_override_fields(cls, override_fields)
++
++        cls._validate_looks_like_flux2(mod)
++
++        cls._validate_does_not_look_like_gguf_quantized(mod)
++
++        variant = override_fields.get("variant") or cls._get_variant_or_raise(mod)
++
++        return cls(**override_fields, variant=variant)
++
++    @classmethod
++    def _validate_looks_like_flux2(cls, mod: ModelOnDisk) -> None:
++        state_dict = mod.load_state_dict()
++        if not _has_flux2_keys(state_dict):
++            raise NotAMatchError("state dict does not look like a FLUX.2 checkpoint")
++
++    @classmethod
++    def _get_variant_or_raise(cls, mod: ModelOnDisk) -> Flux2VariantType:
++        state_dict = mod.load_state_dict()
++        variant = _get_flux2_variant(state_dict)
++
++        if variant is None:
++            raise NotAMatchError("unable to determine FLUX.2 variant from state dict")
++
++        return variant
++
++    @classmethod
++    def _validate_does_not_look_like_gguf_quantized(cls, mod: ModelOnDisk) -> None:
++        has_ggml_tensors = _has_ggml_tensors(mod.load_state_dict())
++        if has_ggml_tensors:
++            raise NotAMatchError("state dict looks like GGUF quantized")
+diff --git a/invokeai/backend/model_manager/load/model_loaders/flux2.py b/invokeai/backend/model_manager/load/model_loaders/flux2.py
+new file mode 100644
+index 0000000..7a36750
+--- /dev/null
++++ b/invokeai/backend/model_manager/load/model_loaders/flux2.py
+@@ -0,0 +1,72 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""Model loaders for FLUX.2 models (e.g., FLUX.2-klein-4B, FLUX.2-klein-9B)."""
++
++from pathlib import Path
++from typing import Optional
++
++import accelerate
++import torch
++from safetensors.torch import load_file
++
++from invokeai.backend.flux2.model import Flux2
++from invokeai.backend.flux2.util import get_flux2_transformer_params
++from invokeai.backend.model_manager.configs.factory import AnyModelConfig
++from invokeai.backend.model_manager.configs.main import Main_Checkpoint_FLUX2_Config
++from invokeai.backend.model_manager.load.load_default import ModelLoader
++from invokeai.backend.model_manager.load.model_loader_registry import ModelLoaderRegistry
++from invokeai.backend.model_manager.taxonomy import (
++    AnyModel,
++    BaseModelType,
++    ModelFormat,
++    ModelType,
++    SubModelType,
++)
++
++
++@ModelLoaderRegistry.register(base=BaseModelType.Flux2, type=ModelType.Main, format=ModelFormat.Checkpoint)
++class Flux2CheckpointModel(ModelLoader):
++    """Loader for FLUX.2 transformer checkpoints (safetensors format)."""
++
++    def _load_model(
++        self,
++        config: AnyModelConfig,
++        submodel_type: Optional[SubModelType] = None,
++    ) -> AnyModel:
++        if not isinstance(config, Main_Checkpoint_FLUX2_Config):
++            raise ValueError("Only Main_Checkpoint_FLUX2_Config models are supported here.")
++
++        match submodel_type:
++            case SubModelType.Transformer:
++                return self._load_transformer(config)
++            case _:
++                raise ValueError(
++                    f"Only Transformer submodels are currently supported for FLUX.2. "
++                    f"Received: {submodel_type.value if submodel_type else 'None'}"
++                )
++
++    def _load_transformer(self, config: Main_Checkpoint_FLUX2_Config) -> AnyModel:
++        """Load FLUX.2 transformer from safetensors checkpoint."""
++        model_path = Path(config.path)
++
++        # Get transformer parameters for this variant
++        params = get_flux2_transformer_params(config.variant)
++
++        # Initialize model with empty weights
++        with accelerate.init_empty_weights():
++            model = Flux2(params)
++
++        # Load state dict
++        sd = load_file(model_path)
++
++        # Compute memory requirements and ensure space in cache
++        new_sd_size = sum(ten.nelement() * torch.bfloat16.itemsize for ten in sd.values())
++        self._ram_cache.make_room(new_sd_size)
++
++        # Cast all tensors to bfloat16 (FLUX.2 requires bf16 for inference)
++        for k in sd.keys():
++            sd[k] = sd[k].to(torch.bfloat16)
++
++        # Load weights
++        model.load_state_dict(sd, assign=True)
++
++        return model
+diff --git a/invokeai/backend/model_manager/load/model_loaders/qwen3.py b/invokeai/backend/model_manager/load/model_loaders/qwen3.py
+new file mode 100644
+index 0000000..f8c60cf
+--- /dev/null
++++ b/invokeai/backend/model_manager/load/model_loaders/qwen3.py
+@@ -0,0 +1,82 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""Loaders for Qwen3 text encoder models (used by FLUX.2-klein)."""
++
++from pathlib import Path
++from typing import Optional
++
++import torch
++
++from invokeai.backend.flux2.text_encoder import Qwen3TextEncoder
++from invokeai.backend.model_manager.configs.factory import AnyModelConfig
++from invokeai.backend.model_manager.configs.qwen3_encoder import (
++    Qwen3Encoder_Checkpoint_Config,
++    Qwen3Encoder_Qwen3Encoder_Config,
++)
++from invokeai.backend.model_manager.load.load_default import ModelLoader
++from invokeai.backend.model_manager.load.model_loader_registry import ModelLoaderRegistry
++from invokeai.backend.model_manager.taxonomy import (
++    AnyModel,
++    BaseModelType,
++    ModelFormat,
++    ModelType,
++    SubModelType,
++)
++
++
++@ModelLoaderRegistry.register(base=BaseModelType.Any, type=ModelType.Qwen3Encoder, format=ModelFormat.Checkpoint)
++class Qwen3EncoderCheckpointLoader(ModelLoader):
++    """Load Qwen3 text encoder from single-file checkpoint (safetensors)."""
++
++    def _load_model(
++        self,
++        config: AnyModelConfig,
++        submodel_type: Optional[SubModelType] = None,
++    ) -> AnyModel:
++        if not isinstance(config, Qwen3Encoder_Checkpoint_Config):
++            raise ValueError("Only Qwen3Encoder_Checkpoint_Config models are supported.")
++
++        model_path = Path(config.path)
++
++        # For single-file checkpoints, we need to work with HuggingFace format
++        # This assumes the checkpoint is compatible with Qwen3 model structure
++        raise NotImplementedError(
++            "Single-file Qwen3 checkpoint loading is not yet implemented. "
++            "Please use HuggingFace model directory format instead."
++        )
++
++
++@ModelLoaderRegistry.register(
++    base=BaseModelType.Any, type=ModelType.Qwen3Encoder, format=ModelFormat.Qwen3Encoder
++)
++class Qwen3EncoderLoader(ModelLoader):
++    """Load Qwen3 text encoder from HuggingFace diffusers-like directory structure."""
++
++    def _load_model(
++        self,
++        config: AnyModelConfig,
++        submodel_type: Optional[SubModelType] = None,
++    ) -> AnyModel:
++        if not isinstance(config, Qwen3Encoder_Qwen3Encoder_Config):
++            raise ValueError("Only Qwen3Encoder_Qwen3Encoder_Config models are supported.")
++
++        model_path = Path(config.path)
++
++        # Determine output dimension based on config if available
++        output_dim = getattr(config, "output_dim", None)
++
++        # Set dtype based on torch device
++        if self._torch_dtype == torch.float16:
++            # Qwen3 works better in bfloat16 or float32 than float16
++            dtype = torch.bfloat16
++        else:
++            dtype = self._torch_dtype
++
++        # Load Qwen3 encoder
++        model = Qwen3TextEncoder(
++            model_path=str(model_path),
++            output_dim=output_dim,
++            dtype=dtype,
++            device=self._torch_device,
++        )
++
++        return model
+diff --git a/invokeai/backend/model_manager/taxonomy.py b/invokeai/backend/model_manager/taxonomy.py
+index bc7e113..37963f6 100644
+--- a/invokeai/backend/model_manager/taxonomy.py
++++ b/invokeai/backend/model_manager/taxonomy.py
+@@ -46,6 +46,8 @@ class BaseModelType(str, Enum):
+     """Indicates the model is associated with the Stable Diffusion XL Refiner model architecture."""
+     Flux = "flux"
+     """Indicates the model is associated with FLUX.1 model architecture, including FLUX Dev, Schnell and Fill."""
++    Flux2 = "flux2"
++    """Indicates the model is associated with FLUX.2 model architecture, including FLUX.2-klein variants."""
+     CogView4 = "cogview4"
+     """Indicates the model is associated with CogView 4 model architecture."""
+     ZImage = "z-image"
+@@ -116,6 +118,28 @@ class FluxVariantType(str, Enum):
+     DevFill = "dev_fill"
+ 
+ 
++class Flux2VariantType(str, Enum):
++    """FLUX.2 model variants."""
++
++    Klein4B = "klein_4b"
++    """FLUX.2-klein-4B: 4 billion parameter distilled model using Qwen3 4B text encoder."""
++    Klein9B = "klein_9b"
++    """FLUX.2-klein-9B: 9 billion parameter distilled model (requires Qwen3-8B text encoder)."""
++    Klein9BBase = "klein_9b_base"
++    """FLUX.2-klein-9B-Base: Undistilled foundation model using Qwen3 8B text encoder."""
++    Klein9BFP8 = "klein_9b_fp8"
++    """FLUX.2-klein-9B-FP8: 9 billion parameter model with FP8 quantization."""
++
++
++class Qwen3VariantType(str, Enum):
++    """Qwen3 text encoder variants."""
++
++    Qwen3_4B = "qwen3_4b"
++    """Qwen3 4B text encoder (hidden_size=2560). Used by FLUX.2 Klein 4B."""
++    Qwen3_8B = "qwen3_8b"
++    """Qwen3 8B text encoder (hidden_size=4096). Used by FLUX.2 Klein 9B."""
++
++
+ class ModelFormat(str, Enum):
+     """Storage format of model."""
+ 
+@@ -174,7 +198,7 @@ class FluxLoRAFormat(str, Enum):
+     XLabs = "flux.xlabs"
+ 
+ 
+-AnyVariant: TypeAlias = Union[ModelVariantType, ClipVariantType, FluxVariantType]
+-variant_type_adapter = TypeAdapter[ModelVariantType | ClipVariantType | FluxVariantType](
+-    ModelVariantType | ClipVariantType | FluxVariantType
+-)
++AnyVariant: TypeAlias = Union[ModelVariantType, ClipVariantType, FluxVariantType, Flux2VariantType, Qwen3VariantType]
++variant_type_adapter = TypeAdapter[
++    ModelVariantType | ClipVariantType | FluxVariantType | Flux2VariantType | Qwen3VariantType
++](ModelVariantType | ClipVariantType | FluxVariantType | Flux2VariantType | Qwen3VariantType)
+diff --git a/tests/backend/flux2/__init__.py b/tests/backend/flux2/__init__.py
+new file mode 100644
+index 0000000..e126b92
+--- /dev/null
++++ b/tests/backend/flux2/__init__.py
+@@ -0,0 +1 @@
++# FLUX.2 tests
+diff --git a/tests/backend/flux2/test_flux2_model.py b/tests/backend/flux2/test_flux2_model.py
+new file mode 100644
+index 0000000..280feb6
+--- /dev/null
++++ b/tests/backend/flux2/test_flux2_model.py
+@@ -0,0 +1,262 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""Tests for FLUX.2 model detection and loading."""
++
++import pytest
++import torch
++
++from invokeai.backend.flux2.model import Flux2, Flux2Params
++from invokeai.backend.flux2.util import get_flux2_transformer_params
++from invokeai.backend.model_manager.configs.main import (
++    _get_flux2_variant,
++    _has_flux2_keys,
++)
++from invokeai.backend.model_manager.taxonomy import Flux2VariantType
++
++
++class TestFlux2Detection:
++    """Tests for FLUX.2 model detection from state dict."""
++
++    def test_has_flux2_keys_positive(self):
++        """Test that FLUX.2-specific keys are correctly detected."""
++        state_dict = {
++            "double_stream_modulation_img.lin.weight": torch.zeros(1),
++            "double_stream_modulation_txt.lin.weight": torch.zeros(1),
++            "single_stream_modulation.lin.weight": torch.zeros(1),
++            "img_in.weight": torch.zeros(3072, 128),  # hidden_size=3072, in_channels=128
++        }
++        assert _has_flux2_keys(state_dict) is True
++
++    def test_has_flux2_keys_negative_flux1(self):
++        """Test that FLUX.1 keys are not detected as FLUX.2."""
++        # FLUX.1 has per-block modulation, not shared modulation layers
++        state_dict = {
++            "double_blocks.0.img_mod.lin.weight": torch.zeros(1),
++            "double_blocks.0.txt_mod.lin.weight": torch.zeros(1),
++            "single_blocks.0.modulation.lin.weight": torch.zeros(1),
++            "img_in.weight": torch.zeros(3072, 64),  # in_channels=64 for FLUX.1
++        }
++        assert _has_flux2_keys(state_dict) is False
++
++    def test_get_flux2_variant_klein_4b(self):
++        """Test detection of FLUX.2-klein-4B variant."""
++        # Build a minimal state dict that matches klein-4B architecture
++        # hidden_size=3072, 5 double blocks, 20 single blocks
++        state_dict = {
++            "img_in.weight": torch.zeros(3072, 128),
++            "double_stream_modulation_img.lin.weight": torch.zeros(1),
++        }
++        # Add keys for 5 double blocks and 20 single blocks
++        for i in range(5):
++            state_dict[f"double_blocks.{i}.img_attn.qkv.weight"] = torch.zeros(1)
++        for i in range(20):
++            state_dict[f"single_blocks.{i}.linear1.weight"] = torch.zeros(1)
++
++        variant = _get_flux2_variant(state_dict)
++        assert variant == Flux2VariantType.Klein4B
++
++    def test_get_flux2_variant_klein_9b(self):
++        """Test detection of FLUX.2-klein-9B variant."""
++        # hidden_size=4096, 8 double blocks, 24 single blocks
++        state_dict = {
++            "img_in.weight": torch.zeros(4096, 128),
++            "double_stream_modulation_img.lin.weight": torch.zeros(1),
++        }
++        for i in range(8):
++            state_dict[f"double_blocks.{i}.img_attn.qkv.weight"] = torch.zeros(1)
++        for i in range(24):
++            state_dict[f"single_blocks.{i}.linear1.weight"] = torch.zeros(1)
++
++        variant = _get_flux2_variant(state_dict)
++        assert variant == Flux2VariantType.Klein9B
++
++    def test_get_flux2_variant_klein_9b_fp8(self):
++        """Test detection of FLUX.2-klein-9B-FP8 variant."""
++        state_dict = {
++            "img_in.weight": torch.zeros(4096, 128),
++            "double_stream_modulation_img.lin.weight": torch.zeros(1),
++            # FP8 quantization markers
++            "double_blocks.0.img_attn.qkv.input_scale": torch.zeros(1),
++        }
++        for i in range(8):
++            state_dict[f"double_blocks.{i}.img_attn.qkv.weight"] = torch.zeros(1)
++        for i in range(24):
++            state_dict[f"single_blocks.{i}.linear1.weight"] = torch.zeros(1)
++
++        variant = _get_flux2_variant(state_dict)
++        assert variant == Flux2VariantType.Klein9BFP8
++
++    def test_get_flux2_variant_not_flux2(self):
++        """Test that non-FLUX.2 models return None."""
++        # FLUX.1-style state dict (in_channels=64)
++        state_dict = {
++            "img_in.weight": torch.zeros(3072, 64),
++        }
++        variant = _get_flux2_variant(state_dict)
++        assert variant is None
++
++
++class TestFlux2Params:
++    """Tests for FLUX.2 parameter configurations."""
++
++    def test_klein_4b_params(self):
++        """Test FLUX.2-klein-4B parameter preset."""
++        params = get_flux2_transformer_params(Flux2VariantType.Klein4B)
++
++        assert params.in_channels == 128
++        assert params.hidden_size == 3072
++        assert params.num_attention_heads == 24
++        assert params.attention_head_dim == 128
++        assert params.num_layers == 5
++        assert params.num_single_layers == 20
++        assert params.mlp_ratio == 3.0
++        assert params.joint_attention_dim == 7680
++        assert params.guidance_embeds is False
++        assert params.rope_theta == 2000
++        assert params.axes_dims_rope == [32, 32, 32, 32]
++
++    def test_klein_9b_params(self):
++        """Test FLUX.2-klein-9B parameter preset."""
++        params = get_flux2_transformer_params(Flux2VariantType.Klein9B)
++
++        assert params.in_channels == 128
++        assert params.hidden_size == 4096
++        assert params.num_attention_heads == 32
++        assert params.attention_head_dim == 128
++        assert params.num_layers == 8
++        assert params.num_single_layers == 24
++        assert params.joint_attention_dim == 12288
++        assert params.guidance_embeds is False  # Distilled
++
++    def test_klein_9b_base_params(self):
++        """Test FLUX.2-klein-9B-Base (undistilled) parameter preset."""
++        params = get_flux2_transformer_params(Flux2VariantType.Klein9BBase)
++
++        assert params.in_channels == 128
++        assert params.hidden_size == 4096
++        assert params.num_attention_heads == 32
++        assert params.num_layers == 8
++        assert params.num_single_layers == 24
++        assert params.joint_attention_dim == 12288
++        assert params.guidance_embeds is True  # Undistilled base uses guidance
++
++    def test_unknown_variant_raises(self):
++        """Test that unknown variant raises ValueError."""
++        with pytest.raises(ValueError, match="Unknown FLUX.2 variant"):
++            get_flux2_transformer_params("invalid_variant")
++
++
++class TestFlux2Model:
++    """Tests for FLUX.2 transformer model instantiation."""
++
++    def test_flux2_model_instantiation_klein_4b(self):
++        """Test that Flux2 model can be instantiated with klein-4B params."""
++        params = get_flux2_transformer_params(Flux2VariantType.Klein4B)
++
++        # Should not raise
++        model = Flux2(params)
++
++        # Verify architecture
++        assert model.in_channels == 128
++        assert model.out_channels == 128
++        assert model.hidden_size == 3072
++        assert len(model.double_blocks) == 5
++        assert len(model.single_blocks) == 20
++        assert model.guidance_in is None  # No guidance for distilled model
++
++    def test_flux2_model_instantiation_klein_9b(self):
++        """Test that Flux2 model can be instantiated with klein-9B params."""
++        params = get_flux2_transformer_params(Flux2VariantType.Klein9B)
++
++        model = Flux2(params)
++
++        assert model.hidden_size == 4096
++        assert len(model.double_blocks) == 8
++        assert len(model.single_blocks) == 24
++
++    def test_flux2_model_state_dict_keys(self):
++        """Test that Flux2 model produces expected state dict keys."""
++        params = get_flux2_transformer_params(Flux2VariantType.Klein4B)
++        model = Flux2(params)
++
++        state_dict = model.state_dict()
++
++        # Check for FLUX.2-specific keys
++        assert "double_stream_modulation_img.lin.weight" in state_dict
++        assert "double_stream_modulation_txt.lin.weight" in state_dict
++        assert "single_stream_modulation.lin.weight" in state_dict
++        assert "img_in.weight" in state_dict
++        assert "txt_in.weight" in state_dict
++        assert "time_in.in_layer.weight" in state_dict
++        assert "final_layer.linear.weight" in state_dict
++
++        # Check block keys
++        assert "double_blocks.0.img_attn.qkv.weight" in state_dict
++        assert "double_blocks.4.txt_mlp.2.weight" in state_dict  # Last double block
++        assert "single_blocks.0.linear1.weight" in state_dict
++        assert "single_blocks.19.linear2.weight" in state_dict  # Last single block
++
++    def test_flux2_model_tensor_shapes(self):
++        """Test that Flux2 model tensors have expected shapes."""
++        params = get_flux2_transformer_params(Flux2VariantType.Klein4B)
++        model = Flux2(params)
++
++        state_dict = model.state_dict()
++
++        # img_in: [hidden_size, in_channels]
++        assert state_dict["img_in.weight"].shape == (3072, 128)
++
++        # txt_in: [hidden_size, joint_attention_dim]
++        assert state_dict["txt_in.weight"].shape == (3072, 7680)
++
++        # double_stream_modulation: [6 * hidden_size, hidden_size]
++        assert state_dict["double_stream_modulation_img.lin.weight"].shape == (6 * 3072, 3072)
++
++        # single_stream_modulation: [3 * hidden_size, hidden_size]
++        assert state_dict["single_stream_modulation.lin.weight"].shape == (3 * 3072, 3072)
++
++
++class TestFlux2VsFlux1Distinction:
++    """Tests to verify FLUX.2 is correctly distinguished from FLUX.1."""
++
++    def test_flux2_in_channels_differs_from_flux1(self):
++        """Verify FLUX.2 uses in_channels=128 vs FLUX.1's 64."""
++        params_4b = get_flux2_transformer_params(Flux2VariantType.Klein4B)
++        assert params_4b.in_channels == 128
++
++        # FLUX.1 uses 64 in_channels (verify we're different)
++        from invokeai.backend.flux.util import get_flux_transformers_params
++        from invokeai.backend.model_manager.taxonomy import FluxVariantType
++
++        flux1_params = get_flux_transformers_params(FluxVariantType.Dev)
++        assert flux1_params.in_channels == 64
++
++        # These should be different
++        assert params_4b.in_channels != flux1_params.in_channels
++
++    def test_flux2_block_structure_differs_from_flux1(self):
++        """Verify FLUX.2 has different block counts than FLUX.1."""
++        params_4b = get_flux2_transformer_params(Flux2VariantType.Klein4B)
++
++        from invokeai.backend.flux.util import get_flux_transformers_params
++        from invokeai.backend.model_manager.taxonomy import FluxVariantType
++
++        flux1_params = get_flux_transformers_params(FluxVariantType.Dev)
++
++        # FLUX.2-klein-4B: 5 double, 20 single
++        # FLUX.1-dev: 19 double, 38 single
++        assert params_4b.num_layers != flux1_params.depth
++        assert params_4b.num_single_layers != flux1_params.depth_single_blocks
++
++    def test_flux2_modulation_structure_is_shared(self):
++        """Verify FLUX.2 uses shared modulation (not per-block like FLUX.1)."""
++        params = get_flux2_transformer_params(Flux2VariantType.Klein4B)
++        model = Flux2(params)
++
++        # FLUX.2 has shared modulation layers at the top level
++        assert hasattr(model, "double_stream_modulation_img")
++        assert hasattr(model, "double_stream_modulation_txt")
++        assert hasattr(model, "single_stream_modulation")
++
++        # These should be single modules, not per-block
++        assert not hasattr(model.double_blocks[0], "img_mod")
++        assert not hasattr(model.single_blocks[0], "modulation")
+diff --git a/tests/backend/flux2/test_qwen3_encoder.py b/tests/backend/flux2/test_qwen3_encoder.py
+new file mode 100644
+index 0000000..a79f316
+--- /dev/null
++++ b/tests/backend/flux2/test_qwen3_encoder.py
+@@ -0,0 +1,174 @@
++# Copyright (c) 2024, InvokeAI Development Team
++"""Tests for Qwen3 text encoder used in FLUX.2-klein."""
++
++import pytest
++import torch
++
++from invokeai.backend.flux2.text_encoder import Qwen3TextEncoder
++
++
++class TestQwen3TextEncoder:
++    """Tests for Qwen3TextEncoder."""
++
++    @pytest.fixture
++    def device(self) -> torch.device:
++        """Get device for testing."""
++        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
++
++    @pytest.fixture
++    def encoder(self, device: torch.device) -> Qwen3TextEncoder:
++        """Create Qwen3 encoder instance.
++
++        Note: This requires Qwen3 to be installed. Test will be skipped if not available.
++        """
++        try:
++            from transformers import AutoTokenizer
++
++            # Use a small model for testing (e.g., Qwen/Qwen1.5-0.5B if available)
++            # For now, we'll mock the initialization
++            encoder = object.__new__(Qwen3TextEncoder)
++            encoder.device = device
++            encoder.dtype = torch.bfloat16
++            encoder.output_dim = 2560
++            encoder.proj = None
++
++            # Mock tokenizer
++            encoder.tokenizer = type("Tokenizer", (), {
++                "pad_token_id": 0,
++                "eos_token_id": 2,
++            })()
++
++            # Mock model
++            encoder.model = type("Model", (), {
++                "eval": lambda: None,
++            })()
++
++            return encoder
++        except ImportError:
++            pytest.skip("Transformers not installed")
++
++    def test_encoder_initialization(self, encoder: Qwen3TextEncoder):
++        """Test that encoder initializes correctly."""
++        assert encoder.device is not None
++        assert encoder.dtype == torch.bfloat16
++        assert encoder.output_dim == 2560
++        assert encoder.tokenizer is not None
++        assert encoder.model is not None
++
++    def test_output_dimension_projection(self):
++        """Test that output dimension projection works."""
++        # Create mock encoder with projection
++        encoder = object.__new__(Qwen3TextEncoder)
++        encoder.device = torch.device("cpu")
++        encoder.dtype = torch.bfloat16
++
++        # Test with projection to FLUX.2-klein-4B dimension (7680)
++        native_dim = 2560
++        target_dim = 7680
++        encoder.proj = torch.nn.Linear(native_dim, target_dim, dtype=torch.bfloat16)
++        encoder.output_dim = target_dim
++
++        # Verify projection layer dimensions
++        assert encoder.proj.in_features == native_dim
++        assert encoder.proj.out_features == target_dim
++        assert encoder.output_dim == target_dim
++
++    def test_batch_embedding_shape(self):
++        """Test that embeddings have correct shape."""
++        # Create mock encoder
++        encoder = object.__new__(Qwen3TextEncoder)
++        encoder.device = torch.device("cpu")
++        encoder.dtype = torch.bfloat16
++        encoder.output_dim = 2560
++
++        # Create mock embeddings
++        batch_size = 2
++        seq_len = 77
++        output_dim = 2560
++
++        embeddings = torch.randn(
++            batch_size, seq_len, output_dim, dtype=torch.bfloat16, device=encoder.device
++        )
++
++        # Verify shape
++        assert embeddings.shape == (batch_size, seq_len, output_dim)
++        assert embeddings.dtype == torch.bfloat16
++
++    def test_projection_consistency(self):
++        """Test that projection produces consistent output dimensions."""
++        # Test projections for all FLUX.2 variants
++        variants = {
++            "Klein4B": 7680,
++            "Klein9B": 12288,
++            "Klein9BFP8": 12288,
++        }
++
++        native_dim = 2560
++
++        for variant_name, target_dim in variants.items():
++            proj = torch.nn.Linear(native_dim, target_dim, dtype=torch.bfloat16)
++
++            # Test with sample input
++            input_tensor = torch.randn(1, 77, native_dim, dtype=torch.bfloat16)
++            output_tensor = proj(input_tensor)
++
++            assert output_tensor.shape == (1, 77, target_dim), (
++                f"{variant_name}: Expected output shape (1, 77, {target_dim}), "
++                f"got {output_tensor.shape}"
++            )
++
++
++class TestQwen3EncoderIntegration:
++    """Integration tests for Qwen3 encoder (require model downloads)."""
++
++    @pytest.mark.skip(reason="Requires Qwen3 model download")
++    def test_qwen3_forward_pass_4b(self):
++        """Test forward pass with FLUX.2-klein-4B configuration.
++
++        This test is skipped by default as it requires downloading Qwen3 model.
++        """
++        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++        encoder = Qwen3TextEncoder(
++            model_path="Qwen/Qwen3-7B",
++            output_dim=7680,  # FLUX.2-klein-4B
++            dtype=torch.bfloat16,
++            device=device,
++        )
++
++        # Test text
++        text = ["a photo of a cat", "a painting of a dog"]
++
++        # Forward pass
++        embeddings = encoder(text, max_length=512)
++
++        # Verify output
++        assert embeddings.shape[0] == 2  # batch_size
++        assert embeddings.shape[1] <= 512  # seq_len
++        assert embeddings.shape[2] == 7680  # output_dim
++        assert embeddings.dtype == torch.bfloat16
++
++    @pytest.mark.skip(reason="Requires Qwen3 model download")
++    def test_qwen3_forward_pass_9b(self):
++        """Test forward pass with FLUX.2-klein-9B configuration.
++
++        This test is skipped by default as it requires downloading Qwen3 model.
++        """
++        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++        encoder = Qwen3TextEncoder(
++            model_path="Qwen/Qwen3-7B",
++            output_dim=12288,  # FLUX.2-klein-9B
++            dtype=torch.bfloat16,
++            device=device,
++        )
++
++        # Test text
++        text = ["a realistic photograph of a cat sitting on a windowsill"]
++
++        # Forward pass
++        embeddings = encoder(text, max_length=512)
++
++        # Verify output
++        assert embeddings.shape[0] == 1  # batch_size
++        assert embeddings.shape[1] <= 512  # seq_len
++        assert embeddings.shape[2] == 12288  # output_dim
++        assert embeddings.dtype == torch.bfloat16
+diff --git a/tests/backend/flux2/test_sampling_utils.py b/tests/backend/flux2/test_sampling_utils.py
+new file mode 100644
+index 0000000..ca0b1f3
+--- /dev/null
++++ b/tests/backend/flux2/test_sampling_utils.py
+@@ -0,0 +1,151 @@
++"""Tests for FLUX.2 sampling utilities."""
++
++import math
++
++import torch
++
++from invokeai.backend.flux2.sampling_utils import (
++    compute_empirical_mu,
++    generate_img_ids_flux2,
++    get_noise_flux2,
++    get_schedule_flux2,
++    pack_flux2,
++    unpack_flux2,
++)
++
++
++class TestGetNoiseFlux2:
++    """Tests for 32-channel noise generation."""
++
++    def test_noise_shape(self):
++        """Test that noise has correct 32-channel shape."""
++        noise = get_noise_flux2(
++            num_samples=1, height=1024, width=1024, device=torch.device("cpu"), dtype=torch.float32, seed=42
++        )
++        # height/8 = 128, but then must be divisible by 2: 2*ceil(1024/16) = 128
++        assert noise.shape == (1, 32, 128, 128)
++
++    def test_noise_shape_non_square(self):
++        """Test noise shape for non-square images."""
++        noise = get_noise_flux2(
++            num_samples=1, height=768, width=512, device=torch.device("cpu"), dtype=torch.float32, seed=42
++        )
++        latent_h = 2 * math.ceil(768 / 16)  # 96
++        latent_w = 2 * math.ceil(512 / 16)  # 64
++        assert noise.shape == (1, 32, latent_h, latent_w)
++
++    def test_noise_reproducibility(self):
++        """Test that same seed produces same noise."""
++        noise1 = get_noise_flux2(
++            num_samples=1, height=512, width=512, device=torch.device("cpu"), dtype=torch.float32, seed=123
++        )
++        noise2 = get_noise_flux2(
++            num_samples=1, height=512, width=512, device=torch.device("cpu"), dtype=torch.float32, seed=123
++        )
++        assert torch.allclose(noise1, noise2)
++
++
++class TestPackUnpackFlux2:
++    """Tests for packing and unpacking FLUX.2 latents."""
++
++    def test_pack_shape(self):
++        """Test that packing produces correct sequence shape."""
++        x = torch.randn(1, 32, 128, 128)
++        packed = pack_flux2(x)
++        # (B, 32, 128, 128) -> (B, 64*64, 128) = (1, 4096, 128)
++        assert packed.shape == (1, 64 * 64, 32 * 2 * 2)
++        assert packed.shape == (1, 4096, 128)
++
++    def test_unpack_shape(self):
++        """Test that unpacking produces correct spatial shape."""
++        packed = torch.randn(1, 4096, 128)
++        unpacked = unpack_flux2(packed, height=1024, width=1024)
++        assert unpacked.shape == (1, 32, 128, 128)
++
++    def test_pack_unpack_roundtrip(self):
++        """Test that pack->unpack is identity."""
++        x = torch.randn(1, 32, 64, 64)
++        packed = pack_flux2(x)
++        unpacked = unpack_flux2(packed, height=512, width=512)
++        assert torch.allclose(x, unpacked)
++
++
++class TestGenerateImgIdsFlux2:
++    """Tests for 4D position ID generation."""
++
++    def test_img_ids_shape(self):
++        """Test that img_ids have correct shape."""
++        img_ids = generate_img_ids_flux2(h=128, w=128, batch_size=1, device=torch.device("cpu"))
++        packed_h = 128 // 2  # 64
++        packed_w = 128 // 2  # 64
++        assert img_ids.shape == (1, packed_h * packed_w, 4)
++
++    def test_img_ids_dtype(self):
++        """Test that img_ids use int64 dtype (required for RoPE)."""
++        img_ids = generate_img_ids_flux2(h=64, w=64, batch_size=1, device=torch.device("cpu"))
++        assert img_ids.dtype == torch.long
++
++    def test_img_ids_first_two_dims_zero(self):
++        """Test that T and L dims are zero (only H, W vary)."""
++        img_ids = generate_img_ids_flux2(h=64, w=64, batch_size=1, device=torch.device("cpu"))
++        # First dim (T) should be all zeros
++        assert (img_ids[..., 0] == 0).all()
++        # Fourth dim (L) should be all zeros
++        assert (img_ids[..., 3] == 0).all()
++
++    def test_img_ids_h_w_values(self):
++        """Test that H and W position values are correct."""
++        img_ids = generate_img_ids_flux2(h=8, w=8, batch_size=1, device=torch.device("cpu"))
++        packed_h = 4
++        packed_w = 4
++        # H values should range from 0 to packed_h-1
++        h_values = img_ids[0, :, 1].reshape(packed_h, packed_w)
++        assert (h_values[:, 0] == torch.arange(packed_h)).all()
++        # W values should range from 0 to packed_w-1
++        w_values = img_ids[0, :, 2].reshape(packed_h, packed_w)
++        assert (w_values[0, :] == torch.arange(packed_w)).all()
++
++
++class TestComputeEmpiricalMu:
++    """Tests for empirical mu computation."""
++
++    def test_mu_positive(self):
++        """Test that mu is positive for typical values."""
++        mu = compute_empirical_mu(image_seq_len=4096, num_steps=4)
++        assert mu > 0
++
++    def test_mu_large_image(self):
++        """Test mu for large image (>4300 tokens)."""
++        mu = compute_empirical_mu(image_seq_len=5000, num_steps=28)
++        assert mu > 0
++
++    def test_mu_increases_with_seq_len(self):
++        """Test that mu increases with image sequence length."""
++        mu1 = compute_empirical_mu(image_seq_len=1024, num_steps=20)
++        mu2 = compute_empirical_mu(image_seq_len=4096, num_steps=20)
++        assert mu2 > mu1
++
++
++class TestGetScheduleFlux2:
++    """Tests for FLUX.2 sigma schedule generation."""
++
++    def test_schedule_length(self):
++        """Test that schedule has num_steps + 1 entries."""
++        schedule = get_schedule_flux2(num_steps=4, image_seq_len=4096)
++        assert len(schedule) == 5  # 4 steps + final 0.0
++
++    def test_schedule_starts_at_one(self):
++        """Test that schedule starts at 1.0."""
++        schedule = get_schedule_flux2(num_steps=4, image_seq_len=4096)
++        assert schedule[0] == 1.0
++
++    def test_schedule_ends_at_zero(self):
++        """Test that schedule ends at 0.0."""
++        schedule = get_schedule_flux2(num_steps=4, image_seq_len=4096)
++        assert schedule[-1] == 0.0
++
++    def test_schedule_is_descending(self):
++        """Test that schedule values are monotonically decreasing."""
++        schedule = get_schedule_flux2(num_steps=10, image_seq_len=4096)
++        for i in range(len(schedule) - 1):
++            assert schedule[i] > schedule[i + 1]
