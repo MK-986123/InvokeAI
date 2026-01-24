@@ -114,6 +114,9 @@ class FluxVariantType(str, Enum):
     Schnell = "schnell"
     Dev = "dev"
     DevFill = "dev_fill"
+    Klein9B = "klein_9b"
+    Klein4B = "klein_4b"
+    Custom = "custom"
 
 
 class ModelFormat(str, Enum):
