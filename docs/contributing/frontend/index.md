@@ -23,6 +23,17 @@ Follow the [dev environment](../dev-environment.md) guide to get set up. Run the
 
 We use [openapi-typescript] to generate types from the app's OpenAPI schema. The generated types are committed to the repo in [schema.ts].
 
+### ⚠️ Important: Never Manually Edit schema.ts
+
+**The `schema.ts` file is auto-generated and should NEVER be manually edited.**
+
+If you need to add or modify types:
+1. Make the changes in the Python backend code (pydantic models, invocations, etc.)
+2. Regenerate the schema using the commands below
+3. Commit both the backend changes AND the regenerated schema.ts file together
+
+### Regenerating Types
+
 If you make backend changes, it's important to regenerate the frontend types:
 
 ```sh
@@ -30,6 +41,8 @@ cd invokeai/frontend/web && python ../../../scripts/generate_openapi_schema.py |
 ```
 
 On macOS and Linux, you can run `make frontend-typegen` as a shortcut for the above snippet.
+
+The CI will automatically check that the schema.ts file is up to date with the backend.
 
 ## Localization
 
