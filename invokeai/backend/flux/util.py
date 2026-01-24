@@ -5,7 +5,7 @@ from typing import Literal
 
 from invokeai.backend.flux.model import FluxParams
 from invokeai.backend.flux.modules.autoencoder import AutoEncoderParams
-from invokeai.backend.model_manager.taxonomy import AnyVariant, FluxVariantType
+from invokeai.backend.model_manager.taxonomy import AnyVariant, Flux2VariantType, FluxVariantType
 
 
 @dataclass
@@ -46,6 +46,10 @@ _flux_max_seq_lengths: dict[AnyVariant, Literal[256, 512]] = {
     FluxVariantType.Dev: 512,
     FluxVariantType.DevFill: 512,
     FluxVariantType.Schnell: 256,
+    Flux2VariantType.Klein4B: 512,
+    Flux2VariantType.Klein9B: 512,
+    Flux2VariantType.Klein9BBase: 512,
+    Flux2VariantType.Klein9BFP8: 512,
 }
 
 
@@ -116,6 +120,51 @@ _flux_transformer_params: dict[AnyVariant, FluxParams] = {
         theta=10_000,
         qkv_bias=True,
         guidance_embed=True,
+    ),
+    # FLUX.2-klein variants use Qwen3 text encoder and 32-channel VAE.
+    # These FluxParams entries are for pipeline-level config (context_in_dim, vec_in_dim).
+    # The actual model is loaded via diffusers Flux2Transformer2DModel.
+    Flux2VariantType.Klein4B: FluxParams(
+        in_channels=64,
+        vec_in_dim=2560,  # Qwen3-4B hidden_size (pooled embedding)
+        context_in_dim=7680,  # 3 stacked Qwen3-4B layers: 3 * 2560
+        hidden_size=3072,
+        mlp_ratio=4.0,
+        num_heads=24,
+        depth=19,
+        depth_single_blocks=38,
+        axes_dim=[16, 56, 56],
+        theta=10_000,
+        qkv_bias=True,
+        guidance_embed=False,  # Distilled model, no guidance embedding
+    ),
+    Flux2VariantType.Klein9B: FluxParams(
+        in_channels=64,
+        vec_in_dim=4096,  # Qwen3-8B hidden_size (pooled embedding)
+        context_in_dim=12288,  # 3 stacked Qwen3-8B layers: 3 * 4096
+        hidden_size=3072,
+        mlp_ratio=4.0,
+        num_heads=24,
+        depth=19,
+        depth_single_blocks=38,
+        axes_dim=[16, 56, 56],
+        theta=10_000,
+        qkv_bias=True,
+        guidance_embed=False,  # Distilled model, no guidance embedding
+    ),
+    Flux2VariantType.Klein9BBase: FluxParams(
+        in_channels=64,
+        vec_in_dim=4096,  # Qwen3-8B hidden_size (pooled embedding)
+        context_in_dim=12288,  # 3 stacked Qwen3-8B layers: 3 * 4096
+        hidden_size=3072,
+        mlp_ratio=4.0,
+        num_heads=24,
+        depth=19,
+        depth_single_blocks=38,
+        axes_dim=[16, 56, 56],
+        theta=10_000,
+        qkv_bias=True,
+        guidance_embed=True,  # Undistilled base model uses guidance
     ),
 }
 

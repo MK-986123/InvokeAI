@@ -1,4 +1,3 @@
-# Copyright (c) 2024, InvokeAI Development Team
 """FLUX.2 VAE Decode Invocation.
 
 Decodes FLUX.2 latents to images using AutoencoderKLFlux2.
@@ -14,7 +13,7 @@ import torch
 from einops import rearrange
 from PIL import Image
 
-from invokeai.app.invocations.baseinvocation import BaseInvocation, invocation
+from invokeai.app.invocations.baseinvocation import BaseInvocation, Classification, invocation
 from invokeai.app.invocations.fields import (
     FieldDescriptions,
     Input,
@@ -34,7 +33,8 @@ from invokeai.backend.util.devices import TorchDevice
     title="Latents to Image - FLUX.2",
     tags=["latents", "image", "vae", "l2i", "flux2"],
     category="latents",
-    version="1.0.0",
+    version="1.1.0",
+    classification=Classification.Prototype,
 )
 class Flux2VaeDecodeInvocation(BaseInvocation, WithMetadata, WithBoard):
     """Generates an image from FLUX.2 latents using AutoencoderKLFlux2."""
@@ -48,7 +48,7 @@ class Flux2VaeDecodeInvocation(BaseInvocation, WithMetadata, WithBoard):
         input=Input.Connection,
     )
 
-    def _vae_decode(self, vae, latents: torch.Tensor) -> Image.Image:
+    def _vae_decode(self, vae: torch.nn.Module, latents: torch.Tensor) -> Image.Image:
         """Decode latents using the FLUX.2 VAE.
 
         The FLUX.2 VAE (AutoencoderKLFlux2) expects:
@@ -62,10 +62,8 @@ class Flux2VaeDecodeInvocation(BaseInvocation, WithMetadata, WithBoard):
         # Decode using the VAE
         # Handle both diffusers API (.decode()) and custom API
         if hasattr(vae, "decode"):
-            # Diffusers-style VAE
             decoded = vae.decode(latents, return_dict=False)[0]
         else:
-            # Custom VAE with direct call
             decoded = vae(latents)
 
         # Convert from [-1, 1] to [0, 1] then to [0, 255] PIL image
@@ -78,7 +76,8 @@ class Flux2VaeDecodeInvocation(BaseInvocation, WithMetadata, WithBoard):
     def invoke(self, context: InvocationContext) -> ImageOutput:
         latents = context.tensors.load(self.latents.latents_name)
 
-        with context.models.load(self.vae.vae) as vae:
+        vae_info = context.models.load(self.vae.vae)
+        with vae_info.model_on_device() as (_, vae):
             context.util.signal_progress("Running FLUX.2 VAE Decode")
             image = self._vae_decode(vae=vae, latents=latents)
 

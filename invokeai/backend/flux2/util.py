@@ -40,6 +40,20 @@ _flux2_transformer_params: dict[AnyVariant, Flux2Params] = {
         timestep_guidance_channels=256,
         guidance_embeds=False,  # Distilled model
     ),
+    Flux2VariantType.Klein9BBase: Flux2Params(
+        in_channels=128,
+        hidden_size=4096,
+        num_attention_heads=32,
+        attention_head_dim=128,
+        num_layers=8,
+        num_single_layers=24,
+        mlp_ratio=3.0,
+        joint_attention_dim=12288,
+        axes_dims_rope=[32, 32, 32, 32],
+        rope_theta=2000,
+        timestep_guidance_channels=256,
+        guidance_embeds=True,  # Undistilled base model uses guidance
+    ),
     Flux2VariantType.Klein9BFP8: Flux2Params(
         in_channels=128,
         hidden_size=4096,
@@ -70,6 +84,7 @@ def get_flux2_transformer_params(variant: AnyVariant) -> Flux2Params:
 _flux2_max_seq_lengths: dict[AnyVariant, int] = {
     Flux2VariantType.Klein4B: 512,
     Flux2VariantType.Klein9B: 512,
+    Flux2VariantType.Klein9BBase: 512,
     Flux2VariantType.Klein9BFP8: 512,
 }
 

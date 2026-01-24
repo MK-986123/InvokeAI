@@ -125,6 +125,19 @@ class TestFlux2Params:
         assert params.num_layers == 8
         assert params.num_single_layers == 24
         assert params.joint_attention_dim == 12288
+        assert params.guidance_embeds is False  # Distilled
+
+    def test_klein_9b_base_params(self):
+        """Test FLUX.2-klein-9B-Base (undistilled) parameter preset."""
+        params = get_flux2_transformer_params(Flux2VariantType.Klein9BBase)
+
+        assert params.in_channels == 128
+        assert params.hidden_size == 4096
+        assert params.num_attention_heads == 32
+        assert params.num_layers == 8
+        assert params.num_single_layers == 24
+        assert params.joint_attention_dim == 12288
+        assert params.guidance_embeds is True  # Undistilled base uses guidance
 
     def test_unknown_variant_raises(self):
         """Test that unknown variant raises ValueError."""

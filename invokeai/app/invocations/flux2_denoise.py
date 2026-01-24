@@ -1,23 +1,21 @@
-# Copyright (c) 2024, InvokeAI Development Team
-"""FLUX.2 Denoise Invocation.
+"""Flux2 Klein Denoise Invocation.
 
-Implements the FLUX.2-klein denoising pipeline:
-- Supports FLUX.2-klein-4B (and optionally 9B/9B-FP8)
-- Uses Qwen3 text embeddings (not CLIP+T5)
-- Supports BN normalization from FLUX.2 VAE stats
-- Distilled for few-step inference (default 4 steps)
-- Optional CFG support with negative conditioning
+Run denoising process with a FLUX.2 Klein transformer model.
+Uses Qwen3 conditioning instead of CLIP+T5.
 """
 
-import math
-from typing import Optional
+from contextlib import ExitStack
+from typing import Callable, Iterator, Optional, Tuple
 
 import torch
-from einops import rearrange
+import torchvision.transforms as tv_transforms
+from torchvision.transforms.functional import resize as tv_resize
 
-from invokeai.app.invocations.baseinvocation import BaseInvocation, invocation
+from invokeai.app.invocations.baseinvocation import BaseInvocation, Classification, invocation
 from invokeai.app.invocations.fields import (
+    DenoiseMaskField,
     FieldDescriptions,
+    FluxConditioningField,
     Input,
     InputField,
     LatentsField,
@@ -25,41 +23,51 @@ from invokeai.app.invocations.fields import (
 from invokeai.app.invocations.model import TransformerField, VAEField
 from invokeai.app.invocations.primitives import LatentsOutput
 from invokeai.app.services.shared.invocation_context import InvocationContext
-from invokeai.backend.flux.sampling_utils import (
-    generate_img_ids,
-    get_noise,
-    get_schedule,
-    pack,
-    unpack,
-)
-from invokeai.backend.flux.schedulers import FLUX_SCHEDULER_MAP, FLUX_SCHEDULER_NAME_VALUES
+from invokeai.backend.flux.sampling_utils import clip_timestep_schedule_fractional
+from invokeai.backend.flux.schedulers import FLUX_SCHEDULER_LABELS, FLUX_SCHEDULER_MAP, FLUX_SCHEDULER_NAME_VALUES
 from invokeai.backend.flux2.denoise import denoise
-from invokeai.backend.flux2.model import Flux2
-from invokeai.backend.model_manager.taxonomy import BaseModelType, ModelType
+from invokeai.backend.flux2.sampling_utils import (
+    compute_empirical_mu,
+    generate_img_ids_flux2,
+    get_noise_flux2,
+    get_schedule_flux2,
+    pack_flux2,
+    unpack_flux2,
+)
+from invokeai.backend.model_manager.taxonomy import BaseModelType, ModelFormat, ModelType
+from invokeai.backend.patches.layer_patcher import LayerPatcher
+from invokeai.backend.patches.lora_conversions.flux_lora_constants import FLUX_LORA_TRANSFORMER_PREFIX
+from invokeai.backend.patches.model_patch_raw import ModelPatchRaw
+from invokeai.backend.rectified_flow.rectified_flow_inpaint_extension import RectifiedFlowInpaintExtension
 from invokeai.backend.stable_diffusion.diffusers_pipeline import PipelineIntermediateState
+from invokeai.backend.stable_diffusion.diffusion.conditioning_data import FLUXConditioningInfo
 from invokeai.backend.util.devices import TorchDevice
-
-
-class Flux2ConditioningField:
-    """Placeholder for FLUX.2 conditioning field (Qwen3 embeddings)."""
-
-    txt_embeddings: torch.Tensor
-    txt_ids: torch.Tensor
 
 
 @invocation(
     "flux2_denoise",
-    title="FLUX.2 Denoise",
-    tags=["image", "flux2", "klein"],
+    title="FLUX2 Denoise",
+    tags=["image", "flux", "flux2", "klein", "denoise"],
     category="image",
-    version="1.0.0",
+    version="1.2.0",
+    classification=Classification.Prototype,
 )
 class Flux2DenoiseInvocation(BaseInvocation):
-    """Run denoising process with a FLUX.2-klein transformer model."""
+    """Run denoising with FLUX.2 Klein transformer model.
+
+    This node is designed for FLUX.2 Klein models which use Qwen3 as the
+    text encoder. It does not support ControlNet, IP-Adapters, or regional
+    prompting.
+    """
 
     latents: Optional[LatentsField] = InputField(
         default=None,
         description=FieldDescriptions.latents,
+        input=Input.Connection,
+    )
+    denoise_mask: Optional[DenoiseMaskField] = InputField(
+        default=None,
+        description=FieldDescriptions.denoise_mask,
         input=Input.Connection,
     )
     denoising_start: float = InputField(
@@ -69,117 +77,148 @@ class Flux2DenoiseInvocation(BaseInvocation):
         description=FieldDescriptions.denoising_start,
     )
     denoising_end: float = InputField(
-        default=1.0, ge=0, le=1, description=FieldDescriptions.denoising_end
+        default=1.0,
+        ge=0,
+        le=1,
+        description=FieldDescriptions.denoising_end,
     )
+    add_noise: bool = InputField(default=True, description="Add noise based on denoising start.")
     transformer: TransformerField = InputField(
-        description="FLUX.2 transformer model.",
+        description=FieldDescriptions.flux_model,
         input=Input.Connection,
         title="Transformer",
     )
-    vae: Optional[VAEField] = InputField(
-        default=None,
-        description="FLUX.2 VAE for BN stats (optional).",
-        input=Input.Connection,
-        title="VAE",
-    )
-    positive_text_conditioning: LatentsField = InputField(
-        description="Positive text conditioning (Qwen3 embeddings).",
+    positive_text_conditioning: FluxConditioningField = InputField(
+        description=FieldDescriptions.positive_cond,
         input=Input.Connection,
     )
-    negative_text_conditioning: Optional[LatentsField] = InputField(
+    negative_text_conditioning: Optional[FluxConditioningField] = InputField(
         default=None,
-        description="Negative text conditioning. Required if cfg_scale > 1.0.",
+        description="Negative conditioning tensor. Can be None if cfg_scale is 1.0.",
         input=Input.Connection,
     )
     cfg_scale: float = InputField(
         default=1.0,
-        ge=1.0,
-        description="CFG scale. 1.0 means no CFG (recommended for distilled models).",
+        description=FieldDescriptions.cfg_scale,
         title="CFG Scale",
     )
-    width: int = InputField(
-        default=1024, multiple_of=16, ge=256, le=8192, description="Width of the generated image."
-    )
-    height: int = InputField(
-        default=1024, multiple_of=16, ge=256, le=8192, description="Height of the generated image."
-    )
+    width: int = InputField(default=1024, multiple_of=16, description="Width of generated image.")
+    height: int = InputField(default=1024, multiple_of=16, description="Height of generated image.")
     num_steps: int = InputField(
-        default=4, ge=1, le=100, description="Number of denoising steps (4 recommended for klein)."
-    )
-    guidance: float = InputField(
-        default=1.0,
-        ge=0.0,
-        description="Guidance value. Only used if model has guidance_embeds=True.",
+        default=4,
+        description="Number of diffusion steps. Use 4 for distilled models, 28+ for base models.",
     )
     scheduler: FLUX_SCHEDULER_NAME_VALUES = InputField(
         default="euler",
-        description="Scheduler to use for denoising.",
+        description="Scheduler (sampler) for denoising. 'euler' is standard. "
+        "'heun' is 2nd-order. 'lcm' optimized for few steps.",
+        ui_choice_labels=FLUX_SCHEDULER_LABELS,
     )
-    seed: int = InputField(default=0, description="Random seed for noise generation.")
+    seed: int = InputField(default=0, description="Randomness seed for reproducibility.")
+    vae: VAEField = InputField(
+        description="FLUX.2 VAE model (required for BN statistics).",
+        input=Input.Connection,
+    )
 
-    def _get_bn_stats(
-        self, context: InvocationContext
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
-        """Extract BN running statistics from the FLUX.2 VAE.
+    def _get_bn_stats(self, context: InvocationContext) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """Extract BN statistics from FLUX.2 VAE.
 
-        The FLUX.2 VAE uses batch normalization on latents. We need the
-        running mean and variance to normalize/denormalize latents during denoising.
+        The FLUX.2 VAE uses batch normalization on the patchified
+        128-channel representation. BFL FLUX.2 VAE uses affine=False, so
+        there are NO learnable weight/bias.
+
+        BN formula (affine=False): y = (x - mean) / std
+        Inverse: x = y * std + mean
+
+        Returns:
+            Tuple of (bn_mean, bn_std) tensors of shape (128,), or None.
         """
-        if self.vae is None:
-            return None
+        with context.models.load(self.vae.vae).model_on_device() as (_, vae):
+            vae.eval()
 
-        with context.models.load(self.vae.vae) as vae:
-            # Look for the quant_conv BN layer (FLUX.2 VAE uses BN after quantization)
             bn_layer = None
-            if hasattr(vae, "quant_conv"):
-                # Check if quant_conv has a BN sublayer
-                if hasattr(vae.quant_conv, "bn") and hasattr(vae.quant_conv.bn, "running_mean"):
-                    bn_layer = vae.quant_conv.bn
-                elif hasattr(vae.quant_conv, "running_mean"):
-                    bn_layer = vae.quant_conv
-            elif hasattr(vae, "encoder") and hasattr(vae.encoder, "norm_out"):
-                if hasattr(vae.encoder.norm_out, "running_mean"):
-                    bn_layer = vae.encoder.norm_out
+            if hasattr(vae, "bn"):
+                bn_layer = vae.bn
+            elif hasattr(vae, "batch_norm"):
+                bn_layer = vae.batch_norm
+            elif hasattr(vae, "encoder") and hasattr(vae.encoder, "bn"):
+                bn_layer = vae.encoder.bn
 
-            if bn_layer is None or bn_layer.running_mean is None:
+            if bn_layer is None:
                 return None
 
-            # Get BN running statistics from VAE
-            bn_mean = bn_layer.running_mean.clone()  # Shape: (128,)
-            bn_var = bn_layer.running_var.clone()  # Shape: (128,)
+            if bn_layer.running_mean is None or bn_layer.running_var is None:
+                return None
 
-            # Get epsilon: VAE config > BN layer > default (1e-4 for BFL)
-            if hasattr(vae, "config") and hasattr(vae.config, "batch_norm_eps"):
-                bn_eps = vae.config.batch_norm_eps
-            elif hasattr(bn_layer, "eps"):
-                bn_eps = bn_layer.eps
-            else:
-                bn_eps = 1e-4  # BFL FLUX.2 default
+            bn_mean = bn_layer.running_mean.clone()
+            bn_var = bn_layer.running_var.clone()
+            # Source BN epsilon from the layer itself, with FLUX.2 default fallback
+            bn_eps = bn_layer.eps if hasattr(bn_layer, "eps") else 1e-4
             bn_std = torch.sqrt(bn_var + bn_eps)
 
         return bn_mean, bn_std
 
+    def _bn_normalize(
+        self,
+        x: torch.Tensor,
+        bn_mean: torch.Tensor,
+        bn_std: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply BN normalization to packed latents.
+
+        Args:
+            x: Packed latents of shape (B, seq, 128).
+            bn_mean: BN running mean of shape (128,).
+            bn_std: BN running std of shape (128,).
+
+        Returns:
+            Normalized latents of same shape.
+        """
+        return (x - bn_mean.to(x.device, x.dtype)) / bn_std.to(x.device, x.dtype)
+
+    def _bn_denormalize(
+        self,
+        x: torch.Tensor,
+        bn_mean: torch.Tensor,
+        bn_std: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply BN denormalization to packed latents.
+
+        Inverse BN (affine=False): x = y * std + mean
+
+        Args:
+            x: Packed latents of shape (B, seq, 128).
+            bn_mean: BN running mean of shape (128,).
+            bn_std: BN running std of shape (128,).
+
+        Returns:
+            Denormalized latents of same shape.
+        """
+        return x * bn_std.to(x.device, x.dtype) + bn_mean.to(x.device, x.dtype)
+
     @torch.no_grad()
     def invoke(self, context: InvocationContext) -> LatentsOutput:
-        # Early validation: CFG requires negative conditioning
-        if self.cfg_scale > 1.0 and self.negative_text_conditioning is None:
-            raise ValueError(
-                f"cfg_scale={self.cfg_scale} requires negative_text_conditioning. "
-                "Either set cfg_scale=1.0 or provide negative conditioning."
-            )
-
         latents = self._run_diffusion(context)
         latents = latents.detach().to("cpu")
 
         name = context.tensors.save(tensor=latents)
-        return LatentsOutput.build(latents_name=name, latents=latents, seed=self.seed)
+        return LatentsOutput.build(latents_name=name, latents=latents, seed=None)
 
     def _run_diffusion(self, context: InvocationContext) -> torch.Tensor:
-        device = TorchDevice.choose_torch_device()
         inference_dtype = torch.bfloat16
+        device = TorchDevice.choose_torch_device()
 
-        # Generate noise
-        noise = get_noise(
+        # Extract BN stats from VAE (moved to device once, not per-call)
+        bn_stats = self._get_bn_stats(context)
+        bn_mean, bn_std = bn_stats if bn_stats is not None else (None, None)
+
+        # Load input latents if provided (for img2img / inpainting)
+        init_latents = context.tensors.load(self.latents.latents_name) if self.latents else None
+        if init_latents is not None:
+            init_latents = init_latents.to(device=device, dtype=inference_dtype)
+
+        # Generate noise (32-channel for FLUX.2 VAE)
+        noise = get_noise_flux2(
             num_samples=1,
             height=self.height,
             width=self.width,
@@ -187,141 +226,208 @@ class Flux2DenoiseInvocation(BaseInvocation):
             dtype=inference_dtype,
             seed=self.seed,
         )
+        b, _c, latent_h, latent_w = noise.shape
+        packed_h = latent_h // 2
+        packed_w = latent_w // 2
 
-        # For FLUX.2: noise has 16 channels from get_noise, but model expects 128 in_channels
-        # The packing operation handles this: 16ch * 2x2 patches = 64, but FLUX.2 uses 128
-        # For FLUX.2, we need to generate noise with the correct latent_channels (32)
-        # and pack appropriately
-        # NOTE: FLUX.2 uses latent_channels=32, patch_size=1
-        # Noise shape: [B, 32, H/8, W/8] -> packed: [B, (H/8)*(W/8), 32*patch^2] = [B, seq, 32]
-        # But the transformer expects in_channels=128, which means the VAE produces 128-dim latents
-        # This is because the VAE patch_size=[2,2] produces: 32 * 2 * 2 = 128 per spatial position
-        b, c, h, w = noise.shape
-        # Adjust for FLUX.2: repack from 16ch (FLUX.1) to correct dimensions
-        # For FLUX.2 with latent_channels=32 and patch_size=[2,2]:
-        # Effective latent dims: H/(8*2) x W/(8*2) spatial, 32*2*2=128 channels per position
+        # Load positive conditioning (Qwen3 embeddings via FluxConditioningField)
+        pos_cond_data = context.conditioning.load(self.positive_text_conditioning.conditioning_name)
+        assert len(pos_cond_data.conditionings) == 1
+        pos_flux_conditioning = pos_cond_data.conditionings[0]
+        assert isinstance(pos_flux_conditioning, FLUXConditioningInfo)
+        pos_flux_conditioning = pos_flux_conditioning.to(dtype=inference_dtype, device=device)
 
-        # Get image sequence length for schedule computation
-        img_seq_len = (self.height // 16) * (self.width // 16)
+        txt = pos_flux_conditioning.t5_embeds  # Qwen3 stacked embeddings stored in t5_embeds field
 
-        # Generate schedule
-        timesteps = get_schedule(
-            num_steps=self.num_steps,
-            image_seq_len=img_seq_len,
-            base_shift=0.5,
-            max_shift=1.15,
-            shift=True,
-        )
+        # Create text position IDs (4D for FLUX.2 RoPE)
+        seq_len = txt.shape[1]
+        txt_ids = torch.zeros(1, seq_len, 4, device=device, dtype=torch.long)
+        txt_ids[..., 3] = torch.arange(seq_len, device=device, dtype=torch.long)
 
-        # Pack noise into sequence format for transformer
-        # FLUX.2 with patch_size=1: each 2x2 patch of latent channels becomes one token
-        img = rearrange(noise, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-
-        # Generate position IDs (4 axes for FLUX.2 RoPE)
-        # FLUX.2 uses 4-axis RoPE: [32, 32, 32, 32]
-        h_ids = torch.arange(self.height // 16, device=device)
-        w_ids = torch.arange(self.width // 16, device=device)
-        img_ids = torch.stack(
-            torch.meshgrid(h_ids, w_ids, indexing="ij"), dim=-1
-        ).reshape(-1, 2)
-        # Expand to 4 axes (FLUX.2 uses 4-dimensional position IDs)
-        img_ids = torch.cat([
-            torch.zeros(img_ids.shape[0], 1, device=device),  # batch dim
-            torch.zeros(img_ids.shape[0], 1, device=device),  # time dim
-            img_ids,  # h, w dims
-        ], dim=-1)
-        img_ids = img_ids.unsqueeze(0).expand(1, -1, -1)
-
-        # Get BN stats from VAE (for latent normalization)
-        bn_stats = self._get_bn_stats(context)
-        if bn_stats is not None:
-            bn_mean, bn_std = bn_stats
-            # Move to device once, not on every normalize/denormalize call
-            bn_mean = bn_mean.to(device=device, dtype=inference_dtype)
-            bn_std = bn_std.to(device=device, dtype=inference_dtype)
-        else:
-            context.logger.warning("FLUX.2 VAE BN stats not found. Normalization skipped.")
-            bn_mean, bn_std = None, None
-
-        # Load the input latents, if provided
-        init_latents = context.tensors.load(self.latents.latents_name) if self.latents else None
-        if init_latents is not None:
-            init_latents = init_latents.to(device=device, dtype=inference_dtype)
-            # Pack init_latents same as noise
-            init_latents = rearrange(init_latents, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-
-        # Handle img-to-img: blend noise with init_latents based on denoising_start
-        if init_latents is not None and self.denoising_start > 0.0:
-            t_start = timesteps[0]  # First timestep value
-            img = t_start * img + (1 - t_start) * init_latents
-
-        # Load text conditioning
-        pos_txt = context.tensors.load(self.positive_text_conditioning.latents_name)
-        pos_txt = pos_txt.to(device=device, dtype=inference_dtype)
-
-        # Create text position IDs (4 axes, matching image)
-        txt_seq_len = pos_txt.shape[1]
-        txt_ids = torch.zeros(1, txt_seq_len, 4, device=device)
-
-        # Load negative conditioning if needed
+        # Load negative conditioning if provided
         neg_txt = None
         neg_txt_ids = None
         if self.negative_text_conditioning is not None:
-            neg_txt = context.tensors.load(self.negative_text_conditioning.latents_name)
-            neg_txt = neg_txt.to(device=device, dtype=inference_dtype)
-            neg_txt_ids = torch.zeros(1, neg_txt.shape[1], 4, device=device)
+            neg_cond_data = context.conditioning.load(self.negative_text_conditioning.conditioning_name)
+            assert len(neg_cond_data.conditionings) == 1
+            neg_flux_conditioning = neg_cond_data.conditionings[0]
+            assert isinstance(neg_flux_conditioning, FLUXConditioningInfo)
+            neg_flux_conditioning = neg_flux_conditioning.to(dtype=inference_dtype, device=device)
+            neg_txt = neg_flux_conditioning.t5_embeds
+            neg_seq_len = neg_txt.shape[1]
+            neg_txt_ids = torch.zeros(1, neg_seq_len, 4, device=device, dtype=torch.long)
+            neg_txt_ids[..., 3] = torch.arange(neg_seq_len, device=device, dtype=torch.long)
 
-        # CFG scale as list
-        cfg_scale_list = [self.cfg_scale] * self.num_steps
+        # Validate transformer model config
+        transformer_config = context.models.get_config(self.transformer.transformer)
+        assert transformer_config.base == BaseModelType.Flux2 and transformer_config.type == ModelType.Main
 
-        # Prepare scheduler if not using built-in Euler
-        # TODO: Load scheduler config from model config for variant-specific values
-        # Current values are tuned for Klein 4B distilled
+        # Compute schedule with dynamic shifting
+        image_seq_len = packed_h * packed_w
+        timesteps = get_schedule_flux2(
+            num_steps=self.num_steps,
+            image_seq_len=image_seq_len,
+        )
+        mu = compute_empirical_mu(image_seq_len=image_seq_len, num_steps=self.num_steps)
+
+        # Clip schedule to denoising range
+        timesteps = clip_timestep_schedule_fractional(timesteps, self.denoising_start, self.denoising_end)
+
+        # Prepare initial sample
+        if init_latents is not None:
+            if self.add_noise:
+                t_0 = timesteps[0]
+                x = t_0 * noise + (1.0 - t_0) * init_latents
+            else:
+                x = init_latents
+        else:
+            if self.denoising_start > 1e-5:
+                raise ValueError("denoising_start should be 0 when initial latents are not provided.")
+            x = noise
+
+        # Short-circuit if schedule is exhausted
+        if len(timesteps) <= 1:
+            return x
+
+        # Generate 4D image position IDs (int64 for RoPE)
+        img_ids = generate_img_ids_flux2(h=latent_h, w=latent_w, batch_size=b, device=device)
+
+        # Prepare inpaint mask
+        inpaint_mask = self._prep_inpaint_mask(context, x)
+
+        # Pack all tensors to sequence format: (B, 32, H, W) -> (B, H/2*W/2, 128)
+        init_latents_packed = pack_flux2(init_latents) if init_latents is not None else None
+        inpaint_mask_packed = pack_flux2(inpaint_mask) if inpaint_mask is not None else None
+        noise_packed = pack_flux2(noise)
+        x = pack_flux2(x)
+
+        # Apply BN normalization (latent space normalization from VAE stats)
+        if bn_mean is not None and bn_std is not None:
+            x = self._bn_normalize(x, bn_mean, bn_std)
+            if init_latents_packed is not None:
+                init_latents_packed = self._bn_normalize(init_latents_packed, bn_mean, bn_std)
+            noise_packed = self._bn_normalize(noise_packed, bn_mean, bn_std)
+
+        assert packed_h * packed_w == x.shape[1]
+
+        # Setup inpainting extension
+        inpaint_extension: Optional[RectifiedFlowInpaintExtension] = None
+        if inpaint_mask_packed is not None:
+            assert init_latents_packed is not None
+            inpaint_extension = RectifiedFlowInpaintExtension(
+                init_latents=init_latents_packed,
+                inpaint_mask=inpaint_mask_packed,
+                noise=noise_packed,
+            )
+
+        num_steps = len(timesteps) - 1
+        cfg_scale_list = [self.cfg_scale] * num_steps
+
+        # Use scheduler for non-inpainting workflows (inpainting needs exact timestep control)
+        is_inpainting = self.denoise_mask is not None or self.denoising_start > 1e-5
+
         scheduler = None
-        if self.scheduler in FLUX_SCHEDULER_MAP:
+        if self.scheduler in FLUX_SCHEDULER_MAP and not is_inpainting:
             scheduler_class = FLUX_SCHEDULER_MAP[self.scheduler]
-            scheduler_instance = scheduler_class(
+            scheduler = scheduler_class(
                 num_train_timesteps=1000,
                 shift=3.0,
-            )
-            # For non-euler schedulers, use the scheduler instead of manual stepping
-            if self.scheduler != "euler":
-                scheduler = scheduler_instance
-
-        def step_callback(state: PipelineIntermediateState) -> None:
-            context.util.signal_progress(
-                message=f"FLUX.2 Denoising step {state.step}/{state.total_steps}",
-                progress=state.step / state.total_steps,
+                use_dynamic_shifting=True,
+                base_shift=0.5,
+                max_shift=1.15,
+                base_image_seq_len=256,
+                max_image_seq_len=4096,
+                time_shift_type="exponential",
             )
 
-        # Load and run transformer
-        with context.models.load(self.transformer.transformer) as transformer:
-            assert isinstance(transformer, Flux2)
+        # Run transformer with LoRA support
+        with ExitStack() as exit_stack:
+            (cached_weights, transformer) = exit_stack.enter_context(
+                context.models.load(self.transformer.transformer).model_on_device()
+            )
+            config = transformer_config
 
-            result = denoise(
+            # Determine if model is quantized (affects LoRA patching strategy)
+            if config.format in [ModelFormat.Diffusers]:
+                model_is_quantized = False
+            elif config.format in [
+                ModelFormat.BnbQuantizedLlmInt8b,
+                ModelFormat.BnbQuantizednf4b,
+                ModelFormat.GGUFQuantized,
+            ]:
+                model_is_quantized = True
+            else:
+                model_is_quantized = False
+
+            exit_stack.enter_context(
+                LayerPatcher.apply_smart_model_patches(
+                    model=transformer,
+                    patches=self._lora_iterator(context),
+                    prefix=FLUX_LORA_TRANSFORMER_PREFIX,
+                    dtype=inference_dtype,
+                    cached_weights=cached_weights,
+                    force_sidecar_patching=model_is_quantized,
+                )
+            )
+
+            x = denoise(
                 model=transformer,
-                img=img,
+                img=x,
                 img_ids=img_ids,
-                txt=pos_txt,
+                txt=txt,
                 txt_ids=txt_ids,
                 timesteps=timesteps,
-                step_callback=step_callback,
-                guidance=self.guidance,
+                step_callback=self._build_step_callback(context),
                 cfg_scale=cfg_scale_list,
                 neg_txt=neg_txt,
                 neg_txt_ids=neg_txt_ids,
-                bn_mean=bn_mean,
-                bn_std=bn_std,
+                scheduler=scheduler,
+                mu=mu,
+                inpaint_extension=inpaint_extension,
             )
 
-        # Unpack from sequence format back to spatial
-        result = rearrange(
-            result,
-            "b (h w) (c ph pw) -> b c (h ph) (w pw)",
-            h=self.height // 16,
-            w=self.width // 16,
-            ph=2,
-            pw=2,
+        # Denormalize BN before unpacking
+        if bn_mean is not None and bn_std is not None:
+            x = self._bn_denormalize(x, bn_mean, bn_std)
+
+        # Unpack from sequence format back to spatial: (B, H/2*W/2, 128) -> (B, 32, H, W)
+        x = unpack_flux2(x.float(), self.height, self.width)
+        return x
+
+    def _prep_inpaint_mask(self, context: InvocationContext, latents: torch.Tensor) -> Optional[torch.Tensor]:
+        """Prepare the inpaint mask, resizing to latent dimensions."""
+        if self.denoise_mask is None:
+            return None
+
+        mask = context.tensors.load(self.denoise_mask.mask_name)
+        # Invert mask: denoise_mask is 1 where we want to preserve, inpaint_extension expects 1 where we denoise
+        mask = 1.0 - mask
+
+        _, _, latent_height, latent_width = latents.shape
+        mask = tv_resize(
+            img=mask,
+            size=[latent_height, latent_width],
+            interpolation=tv_transforms.InterpolationMode.BILINEAR,
+            antialias=False,
         )
 
-        return result
+        mask = mask.to(device=latents.device, dtype=latents.dtype)
+        return mask.expand_as(latents)
+
+    def _lora_iterator(self, context: InvocationContext) -> Iterator[Tuple[ModelPatchRaw, float]]:
+        """Iterate over LoRA models to apply to the transformer."""
+        for lora in self.transformer.loras:
+            lora_info = context.models.load(lora.lora)
+            assert isinstance(lora_info.model, ModelPatchRaw)
+            yield (lora_info.model, lora.weight)
+            del lora_info
+
+    def _build_step_callback(self, context: InvocationContext) -> Callable[[PipelineIntermediateState], None]:
+        """Build callback for step progress updates."""
+
+        def step_callback(state: PipelineIntermediateState) -> None:
+            latents = state.latents.float()
+            state.latents = unpack_flux2(latents, self.height, self.width).squeeze()
+            context.util.flux_step_callback(state)
+
+        return step_callback
