@@ -15,7 +15,7 @@ from invokeai.app.util.t5_model_identifier import (
 )
 from invokeai.backend.flux.util import get_flux_max_seq_length
 from invokeai.backend.model_manager.configs.base import Checkpoint_Config_Base
-from invokeai.backend.model_manager.taxonomy import BaseModelType, ModelType, SubModelType
+from invokeai.backend.model_manager.taxonomy import BaseModelType, FluxVariantType, ModelType, SubModelType
 
 
 @invocation_output("flux_model_loader_output")
@@ -86,6 +86,14 @@ class FluxModelLoaderInvocation(BaseInvocation):
 
         transformer_config = context.models.get_config(transformer)
         assert isinstance(transformer_config, Checkpoint_Config_Base)
+        if transformer_config.variant in {
+            FluxVariantType.Klein9B,
+            FluxVariantType.Klein4B,
+            FluxVariantType.Custom,
+        }:
+            raise ValueError(
+                "FLUX.2 Klein models require a Qwen3 text encoder integration. Use a FLUX.2-specific loader."
+            )
 
         return FluxModelLoaderOutput(
             transformer=TransformerField(transformer=transformer, loras=[]),

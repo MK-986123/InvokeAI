@@ -32,6 +32,7 @@ from invokeai.backend.flux.ip_adapter.xlabs_ip_adapter_flux import (
 )
 from invokeai.backend.flux.model import Flux
 from invokeai.backend.flux.modules.autoencoder import AutoEncoder
+from invokeai.backend.flux.modules.fp8_linear import apply_fp8_linear_from_state_dict
 from invokeai.backend.flux.redux.flux_redux_model import FluxReduxModel
 from invokeai.backend.flux.util import get_flux_ae_params, get_flux_transformers_params
 from invokeai.backend.model_manager.configs.base import Checkpoint_Config_Base
@@ -237,17 +238,27 @@ class FluxCheckpointModel(ModelLoader):
         assert isinstance(config, Main_Checkpoint_FLUX_Config)
         model_path = Path(config.path)
 
-        with accelerate.init_empty_weights():
-            model = Flux(get_flux_transformers_params(config.variant))
-
         sd = load_file(model_path)
         if "model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale" in sd:
             sd = convert_bundle_to_flux_transformer_checkpoint(sd)
-        new_sd_size = sum([ten.nelement() * torch.bfloat16.itemsize for ten in sd.values()])
+        if config.variant in {FluxVariantType.Custom, FluxVariantType.Klein9B, FluxVariantType.Klein4B}:
+            flux_params = infer_flux_params_from_state_dict(sd)
+        else:
+            flux_params = get_flux_transformers_params(config.variant)
+        with accelerate.init_empty_weights():
+            model = Flux(flux_params)
+            apply_fp8_linear_from_state_dict(model, sd)
+        new_sd_size = sum([ten.nelement() * ten.element_size() for ten in sd.values()])
         self._ram_cache.make_room(new_sd_size)
-        for k in sd.keys():
+        for k, tensor in list(sd.items()):
+            if k.endswith((".input_scale", ".weight_scale")):
+                sd[k] = tensor.to(torch.float32)
+                continue
+            if tensor.dtype == torch.float8_e4m3fn:
+                sd[k] = tensor
+                continue
             # We need to cast to bfloat16 due to it being the only currently supported dtype for inference
-            sd[k] = sd[k].to(torch.bfloat16)
+            sd[k] = tensor.to(torch.bfloat16)
         model.load_state_dict(sd, assign=True)
         return model
 
