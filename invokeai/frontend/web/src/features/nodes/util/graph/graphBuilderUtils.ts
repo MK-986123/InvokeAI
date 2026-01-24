@@ -210,6 +210,7 @@ const CANVAS_OUTPUT_PREFIX = 'canvas_output';
 export const isMainModelWithoutUnet = (modelLoader: Invocation<MainModelLoaderNodes>) => {
   return (
     modelLoader.type === 'flux_model_loader' ||
+    modelLoader.type === 'flux2_klein_model_loader' ||
     modelLoader.type === 'sd3_model_loader' ||
     modelLoader.type === 'cogview4_model_loader' ||
     modelLoader.type === 'z_image_model_loader'
@@ -236,16 +237,24 @@ export const getDenoisingStartAndEnd = (state: RootState): { denoising_start: nu
         denoising_end: 1,
       };
     }
-    case 'flux': {
-      if (model.variant === 'dev_fill') {
+    case 'flux':
+    case 'flux2': {
+      if (model.base === 'flux' && model.variant === 'dev_fill') {
         // This is a FLUX Fill model - we always denoise fully
         return {
           denoising_start: 0,
           denoising_end: 1,
         };
+      } else if (model.base === 'flux2') {
+        // FLUX.2 Klein: Use linear scaling for more predictable inpainting behavior
+        // The optimized denoising with exponent 0.2 causes unexpected results for low strength values
+        return {
+          denoising_start: 1 - denoisingStrength,
+          denoising_end: 1,
+        };
       } else {
-        // We rescale the img2imgStrength (with exponent 0.2) to effectively use the entire range [0, 1] and make the scale
-        // more user-friendly for SD3.5. Without this, most of the 'change' is concentrated in the high denoise strength
+        // FLUX.1: We rescale the img2imgStrength (with exponent 0.2) to effectively use the entire range [0, 1] and make the scale
+        // more user-friendly for FLUX. Without this, most of the 'change' is concentrated in the high denoise strength
         // range (>0.9).
         const exponent = optimizedDenoisingEnabled ? 0.2 : 1;
         return {
