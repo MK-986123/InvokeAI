@@ -1,0 +1,209 @@
+name: 'triage pull requests for merge'
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      auto_merge:
+        description: 'Enable auto-merge for passing pull requests'
+        required: false
+        type: boolean
+        default: false
+      auto_close:
+        description: 'Close pull requests with failing checks'
+        required: false
+        type: boolean
+        default: false
+      max_prs:
+        description: 'Maximum open PRs to process (0 = all)'
+        required: false
+        type: number
+        default: 0
+      merge_method:
+        description: 'Merge method when auto-merging (merge, squash, rebase)'
+        required: false
+        type: choice
+        options:
+          - merge
+          - squash
+          - rebase
+        default: squash
+      delete_branch:
+        description: 'Delete source branch after auto-merge'
+        required: false
+        type: boolean
+        default: false
+      treat_missing_checks_as_pending:
+        description: 'Treat missing check runs as pending instead of success'
+        required: false
+        type: boolean
+        default: true
+      rate_limit_delay:
+        description: 'Delay between PR API calls (seconds)'
+        required: false
+        type: number
+        default: 1
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate pull request status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUTO_MERGE: ${{ github.event.inputs.auto_merge }}
+          AUTO_CLOSE: ${{ github.event.inputs.auto_close }}
+          MAX_PRS: ${{ github.event.inputs.max_prs }}
+          MERGE_METHOD: ${{ github.event.inputs.merge_method }}
+          DELETE_BRANCH: ${{ github.event.inputs.delete_branch }}
+          TREAT_MISSING_CHECKS_AS_PENDING: ${{ github.event.inputs.treat_missing_checks_as_pending }}
+          RATE_LIMIT_DELAY: ${{ github.event.inputs.rate_limit_delay }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          AUTO_MERGE="${AUTO_MERGE:-false}"
+          AUTO_CLOSE="${AUTO_CLOSE:-false}"
+          MAX_PRS="${MAX_PRS:-0}"
+          MERGE_METHOD="${MERGE_METHOD:-squash}"
+          DELETE_BRANCH="${DELETE_BRANCH:-false}"
+          TREAT_MISSING_CHECKS_AS_PENDING="${TREAT_MISSING_CHECKS_AS_PENDING:-true}"
+          RATE_LIMIT_DELAY="${RATE_LIMIT_DELAY:-1}"
+          IFS=/ read -r OWNER REPO <<< "$REPOSITORY"
+          FAILURE_CONCLUSIONS="failure cancelled timed_out action_required startup_failure stale"
+          PRS_ENDPOINT="repos/$OWNER/$REPO/pulls?state=open"
+
+          gh label create "merge-candidate" --color "0e8a16" --description "CI checks passed; ready to merge" --force
+          gh label create "ci-failed" --color "b60205" --description "CI checks failed; review or discard" --force
+          gh label create "ci-pending" --color "fbca04" --description "CI checks pending or missing" --force
+          gh label create "auto-merge-approved" --color "5319e7" --description "Maintainers approved auto-merge" --force
+          gh label create "auto-close-approved" --color "5319e7" --description "Maintainers approved auto-close" --force
+
+          if [ "$MAX_PRS" -gt 0 ]; then
+            remaining="$MAX_PRS"
+            page=1
+            prs_list=()
+            while [ "$remaining" -gt 0 ]; do
+              if [ "$remaining" -gt 100 ]; then
+                per_page=100
+              else
+                per_page="$remaining"
+              fi
+              page_prs=$(gh api "$PRS_ENDPOINT&per_page=$per_page&page=$page" --jq '.[] | "\(.number) \(.head.sha)"')
+              if [ -z "$page_prs" ]; then
+                break
+              fi
+              while IFS= read -r line; do
+                prs_list+=("$line")
+              done <<< "$page_prs"
+              page_count=$(printf '%s\n' "$page_prs" | wc -l | tr -d ' ')
+              remaining=$((remaining - page_count))
+              page=$((page + 1))
+            done
+            if [ "${#prs_list[@]}" -gt 0 ]; then
+              prs=$(printf '%s\n' "${prs_list[@]}")
+            else
+              prs=""
+            fi
+          else
+            prs=$(gh api "$PRS_ENDPOINT&per_page=100" --paginate --jq '.[] | "\(.number) \(.head.sha)"')
+          fi
+          if [ -z "$prs" ]; then
+            echo "No open pull requests."
+            exit 0
+          fi
+
+          while read -r number sha; do
+            status=$(gh api "repos/$OWNER/$REPO/commits/$sha/status" --jq '.state')
+            check_payload=$(gh api "repos/$OWNER/$REPO/commits/$sha/check-runs")
+            sleep "$RATE_LIMIT_DELAY"
+            check_total=$(echo "$check_payload" | jq -r '.total_count // 0')
+            check_pending=$(echo "$check_payload" | jq -r 'any(.check_runs[]; .status != "completed")')
+            check_failed=$(echo "$check_payload" | jq -r --arg failures "$FAILURE_CONCLUSIONS" '
+              ($failures | split(" ")) as $failures
+              # check_failed is true when any check run has a conclusion in FAILURE_CONCLUSIONS.
+              | any(.check_runs[]; (.conclusion // "pending") as $c | ($failures | index($c) != null))')
+            if [ "$check_total" -eq 0 ]; then
+              check_state="missing"
+            elif [ "$check_pending" = "true" ]; then
+              check_state="pending"
+            elif [ "$check_failed" = "true" ]; then
+              check_state="failure"
+            else
+              check_state="success"
+            fi
+            if [ "$status" = "failure" ] || [ "$status" = "error" ] || [ "$check_state" = "failure" ]; then
+              overall="failure"
+            elif [ "$status" = "pending" ] || [ "$check_state" = "pending" ]; then
+              overall="pending"
+            elif [ "$check_state" = "missing" ] && [ "$TREAT_MISSING_CHECKS_AS_PENDING" = "true" ]; then
+              overall="pending"
+            else
+              overall="success"
+            fi
+
+            current_labels=$(gh pr view "$number" --json labels --jq '.labels[].name')
+            has_label() {
+              if [ -z "$current_labels" ]; then
+                return 1
+              fi
+              echo "$current_labels" | grep -Fxq "$1"
+            }
+            label_changed="false"
+            comment=""
+            case "$overall" in
+              success)
+                if ! has_label "merge-candidate" || has_label "ci-failed" || has_label "ci-pending"; then
+                  gh pr edit "$number" --add-label "merge-candidate" --remove-label "ci-failed" --remove-label "ci-pending"
+                  label_changed="true"
+                  comment="CI checks are passing. Marked as merge-candidate."
+                fi
+                if [ "$AUTO_MERGE" = "true" ] && has_label "auto-merge-approved"; then
+                  pr_state=$(gh pr view "$number" --json mergeStateStatus,reviewDecision,isDraft --jq '.')
+                  merge_state=$(echo "$pr_state" | jq -r '.mergeStateStatus')
+                  review_state=$(echo "$pr_state" | jq -r '.reviewDecision // "REVIEW_REQUIRED"')
+                  is_draft=$(echo "$pr_state" | jq -r '.isDraft')
+                  if [ "$merge_state" = "CLEAN" ] && [ "$review_state" = "APPROVED" ] && [ "$is_draft" = "false" ]; then
+                    merge_flags=("--auto" "--$MERGE_METHOD")
+                    if [ "$DELETE_BRANCH" = "true" ]; then
+                      merge_flags+=("--delete-branch")
+                    fi
+                    if ! gh pr merge "$number" "${merge_flags[@]}"; then
+                      gh pr comment "$number" --body "Auto-merge failed during triage. Please review manually."
+                    fi
+                  fi
+                fi
+                ;;
+              failure)
+                if ! has_label "ci-failed" || has_label "merge-candidate" || has_label "ci-pending"; then
+                  gh pr edit "$number" --add-label "ci-failed" --remove-label "merge-candidate" --remove-label "ci-pending"
+                  label_changed="true"
+                  comment="CI checks failed. Marked as ci-failed for review or discard."
+                fi
+                if [ "$AUTO_CLOSE" = "true" ] && has_label "auto-close-approved"; then
+                  is_draft=$(gh pr view "$number" --json isDraft --jq '.isDraft')
+                  if [ "$is_draft" = "false" ]; then
+                    if ! gh pr close "$number" --comment "Closing due to failing CI per automated triage."; then
+                      gh pr comment "$number" --body "Auto-close failed during triage. Please review manually."
+                    fi
+                  fi
+                fi
+                ;;
+              *)
+                if ! has_label "ci-pending" || has_label "merge-candidate" || has_label "ci-failed"; then
+                  gh pr edit "$number" --add-label "ci-pending" --remove-label "merge-candidate" --remove-label "ci-failed"
+                  label_changed="true"
+                  comment="CI checks are pending or missing."
+                fi
+                ;;
+            esac
+            if [ "$label_changed" = "true" ] && [ -n "$comment" ]; then
+              gh pr comment "$number" --body "$comment"
+            fi
+            sleep "$RATE_LIMIT_DELAY"
+          done <<< "$prs"
