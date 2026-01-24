@@ -76,49 +76,42 @@ class SqliteImageRecordStorage(ImageRecordStorageBase):
     ) -> None:
         with self._db.transaction() as cursor:
             try:
-                # Change the category of the image
+                # Set up the update query
+                update_query = """--sql
+                UPDATE images
+                SET
+                """
+                update_params: list[Union[int, str, bool]] = []
+                update_fields: list[str] = []
+
+                # Update fields
                 if changes.image_category is not None:
-                    cursor.execute(
-                        """--sql
-                        UPDATE images
-                        SET image_category = ?
-                        WHERE image_name = ?;
-                        """,
-                        (changes.image_category, image_name),
-                    )
+                    update_fields.append("image_category = ?")
+                    update_params.append(changes.image_category)
 
-                # Change the session associated with the image
                 if changes.session_id is not None:
-                    cursor.execute(
-                        """--sql
-                        UPDATE images
-                        SET session_id = ?
-                        WHERE image_name = ?;
-                        """,
-                        (changes.session_id, image_name),
-                    )
+                    update_fields.append("session_id = ?")
+                    update_params.append(changes.session_id)
 
-                # Change the image's `is_intermediate`` flag
                 if changes.is_intermediate is not None:
-                    cursor.execute(
-                        """--sql
-                        UPDATE images
-                        SET is_intermediate = ?
-                        WHERE image_name = ?;
-                        """,
-                        (changes.is_intermediate, image_name),
-                    )
+                    update_fields.append("is_intermediate = ?")
+                    update_params.append(changes.is_intermediate)
 
-                # Change the image's `starred`` state
                 if changes.starred is not None:
-                    cursor.execute(
-                        """--sql
-                        UPDATE images
-                        SET starred = ?
-                        WHERE image_name = ?;
-                        """,
-                        (changes.starred, image_name),
-                    )
+                    update_fields.append("starred = ?")
+                    update_params.append(changes.starred)
+
+                # If there are no changes, just return
+                if not update_fields:
+                    return
+
+                # Finalize the query
+                update_query += ", ".join(update_fields)
+                update_query += " WHERE image_name = ?;"
+                update_params.append(image_name)
+
+                # Execute the query
+                cursor.execute(update_query, update_params)
 
             except sqlite3.Error as e:
                 raise ImageRecordSaveException from e
