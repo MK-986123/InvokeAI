@@ -431,7 +431,7 @@ def get_tokens_for_prompt_object(
         (
             x.text
             if type(x) is Fragment
-            else (" ".join([f.text for f in x.original]) if type(x) is CrossAttentionControlSubstitute else str(x))
+            else (" ".join(f.text for f in x.original) if type(x) is CrossAttentionControlSubstitute else str(x))
         )
         for x in parsed_prompt.children
     ]
@@ -481,20 +481,20 @@ def log_tokenization_for_prompt_object(
                     original_fragments.append(f)
                     edited_fragments.append(f)
 
-            original_text = " ".join([x.text for x in original_fragments])
+            original_text = " ".join(x.text for x in original_fragments)
             log_tokenization_for_text(
                 original_text,
                 tokenizer,
                 display_label=f"{display_label_prefix}(.swap originals)",
             )
-            edited_text = " ".join([x.text for x in edited_fragments])
+            edited_text = " ".join(x.text for x in edited_fragments)
             log_tokenization_for_text(
                 edited_text,
                 tokenizer,
                 display_label=f"{display_label_prefix}(.swap replacements)",
             )
         else:
-            text = " ".join([x.text for x in flattened_prompt.children])
+            text = " ".join(x.text for x in flattened_prompt.children)
             log_tokenization_for_text(text, tokenizer, display_label=display_label_prefix)
 
 
