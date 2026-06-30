@@ -70,9 +70,10 @@ class ShowImageInvocation(BaseInvocation):
 
     def invoke(self, context: InvocationContext) -> ImageOutput:
         image = context.images.get_pil(self.image.image_name)
-        image.show()
-
-        # TODO: how to handle failure?
+        try:
+            image.show()
+        except Exception as e:
+            context.logger.warning(f"Failed to show image: {e}")
 
         return ImageOutput(
             image=ImageField(image_name=self.image.image_name),
