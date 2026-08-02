@@ -176,6 +176,7 @@ InvokeAI:
 
 import logging.handlers
 import socket
+import ssl
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -418,18 +419,33 @@ class InvokeAILogger(object):  # noqa D102
             raise ValueError("please provide destination for http logging using format 'http=url'")
         arg_list = args.split(",")
         url = urllib.parse.urlparse(arg_list.pop(0))
-        if url.scheme != "http":
-            raise ValueError(f"the http logging module can only log to HTTP URLs, but {url.scheme} was specified")
+        if url.scheme not in ["http", "https"]:
+            raise ValueError(f"the http logging module can only log to HTTP(S) URLs, but {url.scheme} was specified")
         host = url.hostname
         path = url.path
-        port = url.port or 80
+        port = url.port or (443 if url.scheme == "https" else 80)
 
         syslog_args: Dict[str, Any] = {}
+        if url.scheme == "https":
+            syslog_args["secure"] = True
+
+        if url.username and url.password:
+            syslog_args["credentials"] = (url.username, url.password)
+
         for a in arg_list:
             arg_name, *arg_value = a.split(":", 2)
             if arg_name == "method":
                 method = arg_value[0] if len(arg_value) > 0 else "GET"
                 syslog_args[arg_name] = method
-            else:  # TODO: Provide support for SSL context and credentials
-                pass
+            elif arg_name == "secure":
+                syslog_args["secure"] = arg_value[0].lower() in ["true", "1", "yes"] if len(arg_value) > 0 else True
+            elif arg_name == "credentials":
+                if len(arg_value) == 2:
+                    syslog_args["credentials"] = (arg_value[0], arg_value[1])
+                else:
+                    raise ValueError("credentials must be in format credentials:username:password")
+
+        if syslog_args.get("secure"):
+            syslog_args["context"] = ssl.create_default_context()
+
         return logging.handlers.HTTPHandler(f"{host}:{port}", path, **syslog_args)
