@@ -6,6 +6,7 @@ from invokeai.backend.tiles.tiles import (
     calc_tiles_min_overlap,
     calc_tiles_with_overlap,
     merge_tiles_with_linear_blending,
+    merge_tiles_with_seam_blending,
 )
 from invokeai.backend.tiles.utils import TBLR, Tile
 
@@ -623,3 +624,163 @@ def test_merge_tiles_with_linear_blending_mismatched_list_lengths():
 
     with pytest.raises(ValueError):
         merge_tiles_with_linear_blending(dst_image=dst_image, tiles=tiles, tile_images=tile_images, blend_amount=0)
+
+
+#############################################
+# Test merge_tiles_with_seam_blending(...)
+#############################################
+
+
+@pytest.mark.parametrize("blend_amount", [0, 32])
+def test_merge_tiles_with_seam_blending_horizontal(blend_amount: int):
+    """Test merge_tiles_with_seam_blending(...) behavior when merging horizontally."""
+    # Initialize 2 tiles side-by-side.
+    tiles = [
+        Tile(
+            coords=TBLR(top=0, bottom=512, left=0, right=512),
+            overlap=TBLR(top=0, bottom=0, left=0, right=64),
+        ),
+        Tile(
+            coords=TBLR(top=0, bottom=512, left=448, right=960),
+            overlap=TBLR(top=0, bottom=0, left=64, right=0),
+        ),
+    ]
+
+    dst_image = np.zeros((512, 960, 3), dtype=np.uint8)
+
+    # Prepare tile_images that match tiles. Pixel values are set based on the tile index.
+    tile_images = [
+        np.zeros((512, 512, 3)) + 64,
+        np.zeros((512, 512, 3)) + 128,
+    ]
+
+    merge_tiles_with_seam_blending(
+        dst_image=dst_image,
+        tiles=tiles,
+        tile_images=tile_images,
+        blend_amount=blend_amount,
+    )
+
+    assert dst_image.shape == (512, 960, 3)
+    # We don't verify exact pixel values because seam blending is non-trivial, but we expect it to not crash.
+    # And we expect the ends to be the correct color.
+    np.testing.assert_array_equal(dst_image[:, :400, :], np.zeros((512, 400, 3), dtype=np.uint8) + 64)
+    np.testing.assert_array_equal(dst_image[:, 560:, :], np.zeros((512, 400, 3), dtype=np.uint8) + 128)
+
+
+@pytest.mark.parametrize("blend_amount", [0, 32])
+def test_merge_tiles_with_seam_blending_vertical(blend_amount: int):
+    """Test merge_tiles_with_seam_blending(...) behavior when merging vertically."""
+    # Initialize 2 tiles stacked vertically.
+    tiles = [
+        Tile(
+            coords=TBLR(top=0, bottom=512, left=0, right=512),
+            overlap=TBLR(top=0, bottom=64, left=0, right=0),
+        ),
+        Tile(
+            coords=TBLR(top=448, bottom=960, left=0, right=512),
+            overlap=TBLR(top=64, bottom=0, left=0, right=0),
+        ),
+    ]
+
+    dst_image = np.zeros((960, 512, 3), dtype=np.uint8)
+
+    # Prepare tile_images that match tiles. Pixel values are set based on the tile index.
+    tile_images = [
+        np.zeros((512, 512, 3)) + 64,
+        np.zeros((512, 512, 3)) + 128,
+    ]
+
+    merge_tiles_with_seam_blending(
+        dst_image=dst_image,
+        tiles=tiles,
+        tile_images=tile_images,
+        blend_amount=blend_amount,
+    )
+
+    assert dst_image.shape == (960, 512, 3)
+    # We expect the ends to be the correct color.
+    np.testing.assert_array_equal(dst_image[:400, :, :], np.zeros((400, 512, 3), dtype=np.uint8) + 64)
+    np.testing.assert_array_equal(dst_image[560:, :, :], np.zeros((400, 512, 3), dtype=np.uint8) + 128)
+
+
+def test_merge_tiles_with_seam_blending_blend_amount_exceeds_vertical_overlap():
+    """Test that merge_tiles_with_seam_blending(...) raises an exception if 'blend_amount' exceeds the overlap between
+    any vertically adjacent tiles.
+    """
+    # Initialize 2 tiles stacked vertically.
+    tiles = [
+        Tile(
+            coords=TBLR(top=0, bottom=512, left=0, right=512),
+            overlap=TBLR(top=0, bottom=64, left=0, right=0),
+        ),
+        Tile(
+            coords=TBLR(top=448, bottom=960, left=0, right=512),
+            overlap=TBLR(top=64, bottom=0, left=0, right=0),
+        ),
+    ]
+
+    dst_image = np.zeros((960, 512, 3), dtype=np.uint8)
+
+    # Prepare tile_images that match tiles.
+    tile_images = [np.zeros((512, 512, 3)), np.zeros((512, 512, 3))]
+
+    # blend_amount=128 exceeds overlap of 64, so should raise exception.
+    with pytest.raises(AssertionError):
+        merge_tiles_with_seam_blending(dst_image=dst_image, tiles=tiles, tile_images=tile_images, blend_amount=128)
+
+
+def test_merge_tiles_with_seam_blending_blend_amount_exceeds_horizontal_overlap():
+    """Test that merge_tiles_with_seam_blending(...) raises an exception if 'blend_amount' exceeds the overlap between
+    any horizontally adjacent tiles.
+    """
+    # Initialize 2 tiles side-by-side.
+    tiles = [
+        Tile(
+            coords=TBLR(top=0, bottom=512, left=0, right=512),
+            overlap=TBLR(top=0, bottom=0, left=0, right=64),
+        ),
+        Tile(
+            coords=TBLR(top=0, bottom=512, left=448, right=960),
+            overlap=TBLR(top=0, bottom=0, left=64, right=0),
+        ),
+    ]
+
+    dst_image = np.zeros((512, 960, 3), dtype=np.uint8)
+
+    # Prepare tile_images that match tiles.
+    tile_images = [np.zeros((512, 512, 3)), np.zeros((512, 512, 3))]
+
+    # blend_amount=128 exceeds overlap of 64, so should raise exception.
+    with pytest.raises(AssertionError):
+        merge_tiles_with_seam_blending(dst_image=dst_image, tiles=tiles, tile_images=tile_images, blend_amount=128)
+
+
+def test_merge_tiles_with_seam_blending_tiles_overflow_dst_image():
+    """Test that merge_tiles_with_seam_blending(...) raises an exception if any of the tiles overflows the dst_image."""
+    tiles = [
+        Tile(
+            coords=TBLR(top=0, bottom=512, left=0, right=512),
+            overlap=TBLR(top=0, bottom=0, left=0, right=0),
+        )
+    ]
+    dst_image = np.zeros((256, 512, 3), dtype=np.uint8)
+    tile_images = [np.zeros((512, 512, 3))]
+    with pytest.raises(ValueError):
+        merge_tiles_with_seam_blending(dst_image=dst_image, tiles=tiles, tile_images=tile_images, blend_amount=0)
+
+
+def test_merge_tiles_with_seam_blending_mismatched_list_lengths():
+    """Test that merge_tiles_with_seam_blending(...) raises an exception if the lengths of 'tiles' and 'tile_images'
+    do not match.
+    """
+    tiles = [
+        Tile(
+            coords=TBLR(top=0, bottom=512, left=0, right=512),
+            overlap=TBLR(top=0, bottom=0, left=0, right=0),
+        )
+    ]
+    dst_image = np.zeros((512, 512, 3), dtype=np.uint8)
+    tile_images = [np.zeros((512, 512, 3)), np.zeros((512, 512, 3))]
+    with pytest.raises(ValueError):
+        merge_tiles_with_seam_blending(dst_image=dst_image, tiles=tiles, tile_images=tile_images, blend_amount=0)
