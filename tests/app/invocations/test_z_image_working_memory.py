@@ -131,7 +131,7 @@ class TestZImageWorkingMemory:
 
             # Call the static method directly
             try:
-                ZImageImageToLatentsInvocation.vae_encode(mock_vae_info, mock_image_tensor)
+                ZImageImageToLatentsInvocation.vae_encode(mock_vae_info, mock_image_tensor, seed=0)
             except Exception:
                 # We expect some errors due to mocking, but we just want to verify the working memory was requested
                 pass
