@@ -280,14 +280,7 @@ class SqliteImageRecordStorage(ImageRecordStorageBase):
     def delete_many(self, image_names: list[str]) -> None:
         with self._db.transaction() as cursor:
             try:
-                placeholders = ",".join("?" for _ in image_names)
-
-                # Construct the SQLite query with the placeholders
-                query = f"DELETE FROM images WHERE image_name IN ({placeholders})"
-
-                # Execute the query with the list of IDs as parameters
-                cursor.execute(query, image_names)
-
+                cursor.executemany("DELETE FROM images WHERE image_name = ?;", [(name,) for name in image_names])
             except sqlite3.Error as e:
                 raise ImageRecordDeleteException from e
 
