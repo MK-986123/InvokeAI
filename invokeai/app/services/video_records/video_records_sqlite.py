@@ -222,8 +222,7 @@ class SqliteVideoRecordStorage(VideoRecordStorageBase):
     def delete_many(self, video_names: list[str]) -> None:
         with self._db.transaction() as cursor:
             try:
-                placeholders = ",".join("?" for _ in video_names)
-                cursor.execute(f"DELETE FROM videos WHERE video_name IN ({placeholders})", video_names)
+                cursor.executemany("DELETE FROM videos WHERE video_name = ?;", [(name,) for name in video_names])
             except sqlite3.Error as e:
                 raise VideoRecordDeleteException from e
 
