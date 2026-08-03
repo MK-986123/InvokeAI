@@ -231,7 +231,6 @@ class TiledMultiDiffusionDenoiseLatents(BaseInvocation):
                 latent_width=latent_tile_width,
                 cfg_scale=self.cfg_scale,
                 steps=self.steps,
-                cfg_rescale_multiplier=self.cfg_rescale_multiplier,
             )
 
             controlnet_data = DenoiseLatentsInvocation.prep_control_data(
