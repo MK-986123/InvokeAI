@@ -41,6 +41,9 @@ def _fast_safetensors_reader(path: str) -> Dict[str, torch.Tensor]:
                 "F16": torch.float16,
                 "F32": torch.float32,
                 "F64": torch.float64,
+                "BF16": torch.bfloat16,
+                "BOOL": torch.bool,
+                "U8": torch.uint8,
             }[info["dtype"]]
 
             checkpoint[key] = torch.empty(info["shape"], dtype=dtype, device=device)
@@ -54,8 +57,7 @@ def read_checkpoint_meta(path: Union[str, Path], scan: bool = True) -> Dict[str,
             path_str = path.as_posix() if isinstance(path, Path) else path
             checkpoint = _fast_safetensors_reader(path_str)
         except Exception:
-            # TODO: create issue for support "meta"?
-            checkpoint = safetensors.torch.load_file(path, device="cpu")
+            checkpoint = safetensors.torch.load_file(path, device="meta")
     elif str(path).endswith(".gguf"):
         # The GGUF reader used here uses numpy memmap, so these tensors are not loaded into memory during this function
         checkpoint = gguf_sd_loader(Path(path), compute_dtype=torch.float32)
