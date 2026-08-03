@@ -89,10 +89,13 @@ class IAIOnnxRuntimeModel(RawModel):
         def values(self) -> List[Any]:  # fixme
             return list(self.raw_proto)
 
-    def __init__(self, model_path: str, provider: Optional[str]):
+    def __init__(
+        self, model_path: str, provider: Optional[str] = None, sess_options: Optional["SessionOptions"] = None
+    ):
         self.path = model_path
         self.session = None
         self.provider = provider
+        self.sess_options = sess_options
         """
         self.data_path = self.path + "_data"
         if not os.path.exists(self.data_path):
@@ -132,7 +135,7 @@ class IAIOnnxRuntimeModel(RawModel):
             # onnx.save_model(self.proto, "tmp.onnx", save_as_external_data=True, all_tensors_to_one_file=True, location="tmp.onnx_data", size_threshold=1024, convert_attribute=False)
             # TODO: something to be able to get weight when they already moved outside of model proto
             # (trimmed_model, external_data) = buffer_external_data_tensors(self.proto)
-            sess = SessionOptions()
+            sess = self.sess_options or SessionOptions()
             # self._external_data.update(**external_data)
             # sess.add_external_initializers(list(self.data.keys()), list(self.data.values()))
             # sess.enable_profiling = True
@@ -219,5 +222,4 @@ class IAIOnnxRuntimeModel(RawModel):
         if not os.path.isfile(model_path):
             raise Exception(f"Model not found: {model_path}")
 
-        # TODO: session options
-        return cls(str(model_path), provider=provider)
+        return cls(str(model_path), provider=provider, sess_options=sess_options)
