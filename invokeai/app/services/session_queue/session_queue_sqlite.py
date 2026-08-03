@@ -1518,6 +1518,33 @@ class SqliteSessionQueue(SessionQueueBase):
             total=total,
         )
 
+    def _get_queue_items_by_id(self, item_ids: list[int]) -> list[SessionQueueItem]:
+        if not item_ids:
+            return []
+        # SQLite max parameters is typically 999.
+        # We will batch by 900 to be safe.
+        items = []
+        with self._db.transaction() as cursor:
+            for i in range(0, len(item_ids), 900):
+                batch_ids = item_ids[i:i+900]
+                placeholders = ",".join(["?"] * len(batch_ids))
+                cursor.execute(
+                    f"""--sql
+                    SELECT
+                        sq.*,
+                        u.display_name as user_display_name,
+                        u.email as user_email
+                    FROM session_queue sq
+                    LEFT JOIN users u ON sq.user_id = u.user_id
+                    WHERE sq.item_id IN ({placeholders})
+                    """,
+                    tuple(batch_ids),
+                )
+                results = cursor.fetchall()
+                for result in results:
+                    items.append(SessionQueueItem.queue_item_from_dict(dict(result)))
+        return items
+
     def retry_items_by_id(self, queue_id: str, item_ids: list[int]) -> RetryItemsResult:
         """Retries the given queue items"""
         with self._db.transaction() as cursor:
@@ -1533,11 +1560,28 @@ class SqliteSessionQueue(SessionQueueBase):
             if max_new_queue_items <= 0:
                 return RetryItemsResult(queue_id=queue_id, retried_item_ids=[])
 
+            # Bulk fetch requested items
+            items_by_id = {item.item_id: item for item in self._get_queue_items_by_id(item_ids)}
+
+            # Find missing root items
+            root_item_ids_to_fetch = set()
             for item_id in item_ids:
-                try:
-                    queue_item = self.get_queue_item(item_id)
-                except SessionQueueItemNotFoundError:
+                if item_id in items_by_id:
+                    queue_item = items_by_id[item_id]
+                    root_item_id = queue_item.root_item_id or queue_item.item_id
+                    if root_item_id not in items_by_id:
+                        root_item_ids_to_fetch.add(root_item_id)
+
+            if root_item_ids_to_fetch:
+                missing_roots = self._get_queue_items_by_id(list(root_item_ids_to_fetch))
+                for root_item in missing_roots:
+                    items_by_id[root_item.item_id] = root_item
+
+            for item_id in item_ids:
+                if item_id not in items_by_id:
                     continue
+                queue_item = items_by_id[item_id]
+
                 if queue_item.queue_id != queue_id:
                     continue
 
@@ -1549,7 +1593,10 @@ class SqliteSessionQueue(SessionQueueBase):
                     continue
                 seen_root_item_ids.add(root_item_id)
 
-                root_queue_item = self.get_queue_item(root_item_id)
+                if root_item_id not in items_by_id:
+                    continue
+                root_queue_item = items_by_id[root_item_id]
+
                 if root_queue_item.status not in ("failed", "canceled"):
                     continue
 
