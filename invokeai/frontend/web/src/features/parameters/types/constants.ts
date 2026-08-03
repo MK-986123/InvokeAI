@@ -65,6 +65,8 @@ export const SCHEDULER_OPTIONS: ComboboxOption[] = [
   { value: 'deis_k', label: 'DEIS Karras' },
   { value: 'dpmpp_2s', label: 'DPM++ 2S' },
   { value: 'dpmpp_2s_k', label: 'DPM++ 2S Karras' },
+  { value: 'dpmpp_3s', label: 'DPM++ 3S' },
+  { value: 'dpmpp_3s_k', label: 'DPM++ 3S Karras' },
   { value: 'dpmpp_2m', label: 'DPM++ 2M' },
   { value: 'dpmpp_2m_k', label: 'DPM++ 2M Karras' },
   { value: 'dpmpp_2m_sde', label: 'DPM++ 2M SDE' },
