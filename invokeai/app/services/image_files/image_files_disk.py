@@ -237,7 +237,7 @@ class DiskImageFileStorage(ImageFileStorageBase):
         filename = get_thumbnail_name(image_name) if thumbnail else image_name
 
         # Validate the filename itself (no path separators allowed in the filename)
-        basename = Path(filename).name
+        basename = os.path.basename(filename)
         if basename != filename:
             raise ValueError("Invalid image name, potential directory traversal detected")
 
