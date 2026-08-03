@@ -22,8 +22,6 @@ from diffusers.schedulers.scheduling_utils import SchedulerMixin
 
 from invokeai.backend.rectified_flow.er_sde_scheduler import ERSDEScheduler
 
-# TODO: add dpmpp_3s/dpmpp_3s_k when fix released
-# https://github.com/huggingface/diffusers/issues/9007
 
 SCHEDULER_NAME_VALUES = Literal[
     "ddim",
@@ -44,6 +42,8 @@ SCHEDULER_NAME_VALUES = Literal[
     "kdpm_2_a_k",
     "dpmpp_2s",
     "dpmpp_2s_k",
+    "dpmpp_3s",
+    "dpmpp_3s_k",
     "dpmpp_2m",
     "dpmpp_2m_k",
     "dpmpp_2m_sde",
@@ -78,6 +78,8 @@ SCHEDULER_MAP: dict[SCHEDULER_NAME_VALUES, tuple[Type[SchedulerMixin], dict[str,
     "kdpm_2_a_k": (KDPM2AncestralDiscreteScheduler, {"use_karras_sigmas": True}),
     "dpmpp_2s": (DPMSolverSinglestepScheduler, {"use_karras_sigmas": False, "solver_order": 2}),
     "dpmpp_2s_k": (DPMSolverSinglestepScheduler, {"use_karras_sigmas": True, "solver_order": 2}),
+    "dpmpp_3s": (DPMSolverSinglestepScheduler, {"use_karras_sigmas": False, "solver_order": 3}),
+    "dpmpp_3s_k": (DPMSolverSinglestepScheduler, {"use_karras_sigmas": True, "solver_order": 3}),
     "dpmpp_2m": (DPMSolverMultistepScheduler, {"use_karras_sigmas": False, "solver_order": 2}),
     "dpmpp_2m_k": (DPMSolverMultistepScheduler, {"use_karras_sigmas": True, "solver_order": 2}),
     "dpmpp_2m_sde": (

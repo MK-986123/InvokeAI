@@ -32,6 +32,8 @@ export const zSchedulerField = z.enum([
   'unipc',
   'euler_k',
   'dpmpp_2s_k',
+  'dpmpp_3s',
+  'dpmpp_3s_k',
   'dpmpp_2m_k',
   'dpmpp_2m_sde_k',
   'dpmpp_sde_k',
