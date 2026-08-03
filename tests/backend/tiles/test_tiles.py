@@ -2,12 +2,80 @@ import numpy as np
 import pytest
 
 from invokeai.backend.tiles.tiles import (
+    calc_overlap,
     calc_tiles_even_split,
     calc_tiles_min_overlap,
     calc_tiles_with_overlap,
     merge_tiles_with_linear_blending,
 )
 from invokeai.backend.tiles.utils import TBLR, Tile
+
+
+
+####################################
+# Test calc_overlap(...)
+####################################
+
+def test_calc_overlap_single_tile():
+    """Test calc_overlap() behavior when a single tile covers the image."""
+    tiles = [
+        Tile(coords=TBLR(top=0, bottom=512, left=0, right=512), overlap=TBLR(top=0, bottom=0, left=0, right=0))
+    ]
+    updated_tiles = calc_overlap(tiles, num_tiles_x=1, num_tiles_y=1)
+
+    expected_tiles = [
+        Tile(coords=TBLR(top=0, bottom=512, left=0, right=512), overlap=TBLR(top=0, bottom=0, left=0, right=0))
+    ]
+    assert updated_tiles == expected_tiles
+
+
+def test_calc_overlap_horizontal():
+    """Test calc_overlap() behavior when multiple tiles are laid out horizontally."""
+    tiles = [
+        Tile(coords=TBLR(top=0, bottom=512, left=0, right=512), overlap=TBLR(top=0, bottom=0, left=0, right=0)),
+        Tile(coords=TBLR(top=0, bottom=512, left=448, right=960), overlap=TBLR(top=0, bottom=0, left=0, right=0)),
+    ]
+    updated_tiles = calc_overlap(tiles, num_tiles_x=2, num_tiles_y=1)
+
+    expected_tiles = [
+        Tile(coords=TBLR(top=0, bottom=512, left=0, right=512), overlap=TBLR(top=0, bottom=0, left=0, right=64)),
+        Tile(coords=TBLR(top=0, bottom=512, left=448, right=960), overlap=TBLR(top=0, bottom=0, left=64, right=0)),
+    ]
+    assert updated_tiles == expected_tiles
+
+
+def test_calc_overlap_vertical():
+    """Test calc_overlap() behavior when multiple tiles are laid out vertically."""
+    tiles = [
+        Tile(coords=TBLR(top=0, bottom=512, left=0, right=512), overlap=TBLR(top=0, bottom=0, left=0, right=0)),
+        Tile(coords=TBLR(top=448, bottom=960, left=0, right=512), overlap=TBLR(top=0, bottom=0, left=0, right=0)),
+    ]
+    updated_tiles = calc_overlap(tiles, num_tiles_x=1, num_tiles_y=2)
+
+    expected_tiles = [
+        Tile(coords=TBLR(top=0, bottom=512, left=0, right=512), overlap=TBLR(top=0, bottom=64, left=0, right=0)),
+        Tile(coords=TBLR(top=448, bottom=960, left=0, right=512), overlap=TBLR(top=64, bottom=0, left=0, right=0)),
+    ]
+    assert updated_tiles == expected_tiles
+
+
+def test_calc_overlap_grid():
+    """Test calc_overlap() behavior when tiles are laid out in a grid."""
+    tiles = [
+        Tile(coords=TBLR(top=0, bottom=512, left=0, right=512), overlap=TBLR(top=0, bottom=0, left=0, right=0)),
+        Tile(coords=TBLR(top=0, bottom=512, left=448, right=960), overlap=TBLR(top=0, bottom=0, left=0, right=0)),
+        Tile(coords=TBLR(top=448, bottom=960, left=0, right=512), overlap=TBLR(top=0, bottom=0, left=0, right=0)),
+        Tile(coords=TBLR(top=448, bottom=960, left=448, right=960), overlap=TBLR(top=0, bottom=0, left=0, right=0)),
+    ]
+    updated_tiles = calc_overlap(tiles, num_tiles_x=2, num_tiles_y=2)
+
+    expected_tiles = [
+        Tile(coords=TBLR(top=0, bottom=512, left=0, right=512), overlap=TBLR(top=0, bottom=64, left=0, right=64)),
+        Tile(coords=TBLR(top=0, bottom=512, left=448, right=960), overlap=TBLR(top=0, bottom=64, left=64, right=0)),
+        Tile(coords=TBLR(top=448, bottom=960, left=0, right=512), overlap=TBLR(top=64, bottom=0, left=0, right=64)),
+        Tile(coords=TBLR(top=448, bottom=960, left=448, right=960), overlap=TBLR(top=64, bottom=0, left=64, right=0)),
+    ]
+    assert updated_tiles == expected_tiles
 
 ####################################
 # Test calc_tiles_with_overlap(...)
