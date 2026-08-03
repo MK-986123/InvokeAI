@@ -390,7 +390,6 @@ class DenoiseLatentsInvocation(BaseInvocation):
             uncond_regions=uncond_regions,
             cond_regions=cond_regions,
             guidance_scale=cfg_scale,
-            guidance_rescale_multiplier=cfg_rescale_multiplier,
         )
         return conditioning_data
 
