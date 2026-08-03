@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import onnx
 from caffe2.python.onnx.backend import Caffe2Backend
@@ -15,6 +16,10 @@ def main():
     args = parser.parse_args()
     onnx_model = onnx.load(args.model)
     caffe2_init, caffe2_predict = Caffe2Backend.onnx_graph_to_caffe2_net(onnx_model)
+
+    if ".." in args.c2_prefix or os.path.isabs(args.c2_prefix):
+        raise ValueError("Invalid path: path traversal and absolute paths are not allowed.")
+
     caffe2_init_str = caffe2_init.SerializeToString()
     with open(args.c2_prefix + '.init.pb', "wb") as f:
         f.write(caffe2_init_str)
