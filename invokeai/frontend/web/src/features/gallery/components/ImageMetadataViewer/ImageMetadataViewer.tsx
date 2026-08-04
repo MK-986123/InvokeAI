@@ -11,12 +11,15 @@ import {
   TabPanels,
   Tabs,
 } from '@invoke-ai/ui-library';
+import { useAppDispatch } from 'app/store/storeHooks';
 import { IAINoContentFallback, IAINoContentFallbackWithSpinner } from 'common/components/IAIImageFallback';
 import ScrollableContent from 'common/components/OverlayScrollbars/ScrollableContent';
 import ImageMetadataGraphTabContent from 'features/gallery/components/ImageMetadataViewer/ImageMetadataGraphTabContent';
 import { ImageMetadataHandlers } from 'features/metadata/parsing';
+import { setShouldShowItemDetails } from 'features/ui/store/uiSlice';
 import type { ChangeEvent } from 'react';
 import { memo, useCallback, useState } from 'react';
+import { useHotkeys } from 'react-hotkeys-hook';
 import { useTranslation } from 'react-i18next';
 import { PiXBold } from 'react-icons/pi';
 import { useDebouncedMetadata } from 'services/api/hooks/useDebouncedMetadata';
@@ -41,11 +44,15 @@ const TAB_INDEX = {
 const TAB_COUNT = Object.keys(TAB_INDEX).length;
 
 const ImageMetadataViewer = ({ image }: ImageMetadataViewerProps) => {
-  // TODO: fix hotkeys
-  // const dispatch = useAppDispatch();
-  // useHotkeys('esc', () => {
-  //   dispatch(setShouldShowImageDetails(false));
-  // });
+  const dispatch = useAppDispatch();
+  useHotkeys(
+    'esc',
+    () => {
+      dispatch(setShouldShowItemDetails(false));
+    },
+    { enabled: true, preventDefault: true }
+  );
+
   const { t } = useTranslation();
 
   const { metadata, isLoading } = useDebouncedMetadata(image.image_name);
