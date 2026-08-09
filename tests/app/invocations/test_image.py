@@ -433,3 +433,22 @@ def test_image_blend_hsl_subtract_wraps_hue_in_degrees() -> None:
     blended = invocation.apply_blend(image_tensors)
 
     assert torch.allclose(blended, expected_linear_srgb, atol=1e-5)
+
+
+def test_show_image_invocation_handles_exception(monkeypatch) -> None:
+    from invokeai.app.invocations.image import ShowImageInvocation
+
+    input_image = Image.new("RGB", (2, 2))
+    context = _build_context(input_image)
+
+    def mock_show(*args, **kwargs):
+        raise Exception("Mock error displaying image")
+
+    monkeypatch.setattr(Image.Image, "show", mock_show)
+
+    invocation = ShowImageInvocation(image=ImageField(image_name="in"))
+    output = invocation.invoke(context)
+
+    assert output.width == 2
+    assert output.height == 2
+    context.logger.warning.assert_called_once_with("Failed to show image: Mock error displaying image")
