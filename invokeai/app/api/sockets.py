@@ -114,7 +114,7 @@ class SocketIO:
     _unsub_bulk_download = "unsubscribe_bulk_download"
 
     def __init__(self, app: FastAPI):
-        self._sio = AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+        self._sio = AsyncServer(async_mode="asgi", cors_allowed_origins=get_config().allow_origins)
         # When deployed behind a reverse proxy under a sub-path, `base_url` is set and the
         # SubPathASGIMiddleware advertises it via `root_path`. Starlette then hands mounted
         # sub-apps the full public path (e.g. `/invoke/ws/socket.io`). Unlike routers and
