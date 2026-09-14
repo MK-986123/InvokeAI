@@ -95,3 +95,21 @@ class SqliteBoardVideoRecordStorage(BoardVideoRecordStorageBase):
             )
             count = cast(int, cursor.fetchone()[0])
         return count
+
+    def get_boards_for_videos(self, video_names: list[str]) -> dict[str, str]:
+        if not video_names:
+            return {}
+        result_map: dict[str, str] = {}
+        chunk_size = 900
+        for i in range(0, len(video_names), chunk_size):
+            chunk = video_names[i : i + chunk_size]
+            with self._db.transaction() as cursor:
+                placeholders = ",".join("?" for _ in chunk)
+                cursor.execute(
+                    f"SELECT video_name, board_id FROM board_videos WHERE video_name IN ({placeholders});",
+                    chunk,
+                )
+                result = cast(list[sqlite3.Row], cursor.fetchall())
+                for r in result:
+                    result_map[cast(str, r[0])] = cast(str, r[1])
+        return result_map
