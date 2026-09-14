@@ -12,6 +12,7 @@ from diffusers.models.attention_processor import (
 )
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from diffusers.models.autoencoders.autoencoder_tiny import AutoencoderTiny
+from pydantic import field_validator
 
 from invokeai.app.invocations.baseinvocation import BaseInvocation, invocation
 from invokeai.app.invocations.constants import LATENT_SCALE_FACTOR
@@ -24,6 +25,7 @@ from invokeai.app.invocations.fields import (
 from invokeai.app.invocations.model import BaseModelType, VAEField
 from invokeai.app.invocations.primitives import LatentsOutput
 from invokeai.app.services.shared.invocation_context import InvocationContext
+from invokeai.app.util.misc import SEED_MAX
 from invokeai.backend.model_manager.load.load_base import LoadedModel
 from invokeai.backend.stable_diffusion.diffusers_pipeline import image_resized_to_grid_as_tensor
 from invokeai.backend.stable_diffusion.vae_tiling import patch_vae_tiling_params
@@ -44,7 +46,7 @@ COLOR_COMPENSATION_MAP = {"None": [1, 0], "SDXL": [1.015, -0.002]}
     title="Image to Latents - SD1.5, SDXL",
     tags=["latents", "image", "vae", "i2l"],
     category="latents",
-    version="1.2.0",
+    version="1.3.0",
 )
 class ImageToLatentsInvocation(BaseInvocation):
     """Encodes an image into latents."""
@@ -67,8 +69,15 @@ class ImageToLatentsInvocation(BaseInvocation):
     )
     seed: int = InputField(
         default=0,
+        ge=0,
+        le=SEED_MAX,
         description=FieldDescriptions.seed,
     )
+
+    @field_validator("seed", mode="before")
+    def modulo_seed(cls, v):
+        """Return the seed modulo (SEED_MAX + 1) to ensure it is within the valid range."""
+        return v % (SEED_MAX + 1)
 
     @classmethod
     def vae_encode(
