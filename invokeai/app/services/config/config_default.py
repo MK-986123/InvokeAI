@@ -9,6 +9,7 @@ import locale
 import logging
 import os
 import re
+import secrets
 import shutil
 from functools import lru_cache
 from pathlib import Path
@@ -725,8 +726,8 @@ def get_config() -> InvokeAIAppConfig:
     # Create the example config file, with some extra example values provided
     example_config = DefaultInvokeAIAppConfig()
     example_config.remote_api_tokens = [
-        URLRegexTokenPair(url_regex="cool-models.com", token="my_secret_token"),
-        URLRegexTokenPair(url_regex="nifty-models.com", token="some_other_token"),
+        URLRegexTokenPair(url_regex="cool-models.com", token=secrets.token_hex(16)),
+        URLRegexTokenPair(url_regex="nifty-models.com", token=secrets.token_hex(16)),
     ]
     example_config.write_file(config.config_file_path.with_suffix(".example.yaml"), as_example=True)
 
