@@ -1,17 +1,18 @@
 # TODO: Improve blend modes
 # TODO: Add nodes like Hue Adjust for Saturation/Contrast/etc... ?
 # TODO: Continue implementing more blend modes/color spaces(?)
-# TODO: Custom ICC profiles with PIL.ImageCms?
 # TODO: Blend multiple layers all crammed into a tensor(?) or list
 
 # Copyright (c) 2023 Darren Ringer <dwringer@gmail.com>
 # Parts based on Oklab: Copyright (c) 2021 Bj�rn Ottosson <https://bottosson.github.io/>
 # HSL code based on CPython: Copyright (c) 2001-2023 Python Software Foundation; All Rights Reserved
+from io import BytesIO
 from math import pi as PI
 from pathlib import Path
+from typing import Union
 
 import torch
-from PIL import Image
+from PIL import Image, ImageCms
 
 from invokeai.backend.image_util.color_conversion import (
     gamut_clip_tensor,
@@ -22,6 +23,76 @@ from invokeai.backend.image_util.color_conversion import (
 from invokeai.backend.stable_diffusion.diffusers_pipeline import image_resized_to_grid_as_tensor
 
 MAX_FLOAT = torch.finfo(torch.tensor(1.0).dtype).max
+
+
+def get_icc_profile(
+    profile: Union[str, Path, BytesIO, bytes, ImageCms.ImageCmsProfile],
+) -> ImageCms.ImageCmsProfile:
+    """Helper to get an ImageCmsProfile from various types."""
+    if isinstance(profile, (ImageCms.ImageCmsProfile, ImageCms.core.CmsProfile)):
+        return profile
+    elif isinstance(profile, bytes):
+        return ImageCms.getOpenProfile(BytesIO(profile))
+    elif isinstance(profile, (str, Path)):
+        if str(profile).lower() == "srgb":
+            return ImageCms.createProfile("sRGB")
+        elif str(profile).lower() == "lab":
+            return ImageCms.createProfile("LAB")
+        elif str(profile).lower() == "xyz":
+            return ImageCms.createProfile("XYZ")
+        return ImageCms.getOpenProfile(str(profile))
+    elif hasattr(profile, "read"):
+        if hasattr(profile, "seek"):
+            profile.seek(0)
+        return ImageCms.getOpenProfile(profile)
+    else:
+        raise TypeError(f"Invalid type for profile: {type(profile)}")
+
+
+def apply_icc_profile(
+    image: Image.Image,
+    input_profile: Union[str, Path, BytesIO, bytes, ImageCms.ImageCmsProfile],
+    output_profile: Union[str, Path, BytesIO, bytes, ImageCms.ImageCmsProfile] = "sRGB",
+    rendering_intent: int = ImageCms.Intent.PERCEPTUAL,
+    output_mode: Union[str, None] = None,
+) -> Image.Image:
+    """
+    Applies an ICC profile to an image.
+    """
+    in_profile = get_icc_profile(input_profile)
+    out_profile = get_icc_profile(output_profile)
+
+    has_alpha = "A" in image.mode
+    alpha = None
+    if has_alpha:
+        alpha = image.getchannel("A")
+        image = image.convert("RGB")
+        if output_mode is None:
+            output_mode = "RGBA"
+
+    transform_mode = output_mode
+    if has_alpha and output_mode == "RGBA":
+        transform_mode = "RGB"
+    elif output_mode is None:
+        transform_mode = image.mode
+
+    transformed_image = ImageCms.profileToProfile(
+        image,
+        in_profile,
+        out_profile,
+        renderingIntent=rendering_intent,
+        outputMode=transform_mode,
+    )
+
+    if transformed_image is None:
+        transformed_image = image.copy()
+
+    if has_alpha and output_mode == "RGBA":
+        transformed_image = transformed_image.convert("RGBA")
+        transformed_image.putalpha(alpha)
+
+    return transformed_image
+
 
 # CIE Lab to Uniform Perceptual Lab profile is copyright © 2003 Bruce Justin Lindbloom. All rights reserved. <http://www.brucelindbloom.com>
 CIELAB_TO_UPLAB_ICC_PATH = Path(__file__).parent / "assets" / "CIELab_to_UPLab.icc"
