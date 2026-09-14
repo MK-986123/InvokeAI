@@ -1281,12 +1281,30 @@ class SqliteSessionQueue(SessionQueueBase):
             item_ids_with_descendants.append(item_id)
             item_ids_with_descendants.extend(self._get_workflow_call_descendant_ids(item_id))
         item_ids = list(dict.fromkeys(item_ids_with_descendants))
+
+        if not item_ids:
+            return []
+
+        with self._db.transaction() as cursor:
+            status_map = {}
+            # SQLite limits host parameters to 999 in versions < 3.32.0. Chunk the queries.
+            chunk_size = 900
+            for i in range(0, len(item_ids), chunk_size):
+                chunk = item_ids[i : i + chunk_size]
+                placeholders = ", ".join("?" for _ in chunk)
+                cursor.execute(
+                    f"""--sql
+                    SELECT item_id, status FROM session_queue WHERE item_id IN ({placeholders})
+                    """,
+                    tuple(chunk),
+                )
+                status_map.update({row[0]: row[1] for row in cursor.fetchall()})
+
         canceled_item_ids: list[int] = []
         for item_id in item_ids:
             if item_id in exclude_item_ids:
                 continue
-            queue_item = self.get_queue_item(item_id)
-            if queue_item.status in {"completed", "failed", "canceled"}:
+            if status_map.get(item_id) in {"completed", "failed", "canceled"}:
                 continue
             self._set_queue_item_status(item_id=item_id, status="canceled")
             canceled_item_ids.append(item_id)
