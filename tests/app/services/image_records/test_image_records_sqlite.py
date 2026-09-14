@@ -508,3 +508,45 @@ class TestGetImageNamesQueryPlans:
         assert result.image_names == ["asset.png"]
         assert "INDEXED BY" not in statement
         assert "NOT INDEXED" not in statement
+
+
+class TestGetManyByNames:
+    """get_many_by_names() fetches multiple image records by name."""
+
+    def test_get_many_by_names(self, store: SqliteImageRecordStorage) -> None:
+        _save(store, "img1.png", subfolder="folder1")
+        _save(store, "img2.png", subfolder="folder2")
+
+        records = store.get_many_by_names(["img1.png", "img2.png", "missing.png"])
+
+        assert len(records) == 2
+        assert records["img1.png"].image_subfolder == "folder1"
+        assert records["img2.png"].image_subfolder == "folder2"
+        assert "missing.png" not in records
+
+    def test_get_many_by_names_empty(self, store: SqliteImageRecordStorage) -> None:
+        assert store.get_many_by_names([]) == {}
+
+
+class TestGetBoardsForImages:
+    """get_boards_for_images() fetches board IDs for multiple image names."""
+
+    def test_get_boards_for_images(
+        self,
+        stores: tuple[SqliteImageRecordStorage, SqliteBoardRecordStorage, SqliteBoardImageRecordStorage],
+    ) -> None:
+        image_store, board_store, board_image_store = stores
+        _save(image_store, "b1.png")
+        _save(image_store, "b2.png")
+        _save(image_store, "noboa.png")
+
+        board = board_store.save(board_name="Test Board", user_id="user1")
+        board_image_store.add_image_to_board(board.board_id, "b1.png")
+        board_image_store.add_image_to_board(board.board_id, "b2.png")
+
+        boards = board_image_store.get_boards_for_images(["b1.png", "b2.png", "noboa.png", "missing.png"])
+
+        assert len(boards) == 2
+        assert boards["b1.png"] == board.board_id
+        assert boards["b2.png"] == board.board_id
+        assert "noboa.png" not in boards

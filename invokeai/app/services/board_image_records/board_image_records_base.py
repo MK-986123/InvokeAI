@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Optional
 
 from invokeai.app.services.image_records.image_records_common import ImageCategory
@@ -44,6 +45,14 @@ class BoardImageRecordStorageBase(ABC):
         When ``user_id`` is provided, results are restricted to images owned by that user;
         pass ``None`` for the admin path (no per-user restriction).
         """
+        pass
+
+    @abstractmethod
+    def get_boards_for_images(
+        self,
+        image_names: Sequence[str],
+    ) -> dict[str, str]:
+        """Gets board IDs for a sequence of image names, keyed by image_name."""
         pass
 
     @abstractmethod

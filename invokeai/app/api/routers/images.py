@@ -915,20 +915,24 @@ def get_images_by_names(
     try:
         image_service = ApiDependencies.invoker.services.images
 
-        # Fetch DTOs preserving the order of requested names
-        image_dtos: list[ImageDTO] = []
+        dtos = image_service.get_dtos(image_names)
+        dto_map = {dto.image_name: dto for dto in dtos}
+
+        authorized_dtos: list[ImageDTO] = []
         for name in image_names:
+            dto = dto_map.get(name)
+            if dto is None:
+                continue
             try:
                 _assert_image_read_access(name, current_user)
-                dto = image_service.get_dto(name)
-                image_dtos.append(dto)
+                authorized_dtos.append(dto)
             except HTTPException:
                 # Skip images the user is not authorized to view
                 continue
             except Exception:
-                # Skip missing images - they may have been deleted between name fetch and DTO fetch
+                # Skip missing images
                 continue
 
-        return image_dtos
+        return authorized_dtos
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to get image DTOs")

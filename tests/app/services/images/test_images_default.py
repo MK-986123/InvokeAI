@@ -1341,3 +1341,21 @@ class TestDeleteVersusSubfolderMove:
         assert not storage.get_path("raced.png", image_subfolder="old").exists()
         assert storage.get_path("raced.png", thumbnail=True).exists()
         assert _staging_dirs(storage) == []
+
+
+class TestGetDtos:
+    """get_dtos() fetches multiple DTOs preserving requested order."""
+
+    def test_get_dtos(self, wired: tuple[ImageService, SqliteImageRecordStorage, DiskImageFileStorage]) -> None:
+        svc, records, storage = wired
+        invoker = svc._ImageService__invoker  # type: ignore
+        invoker.services.urls.get_image_url.return_value = "http://example.com/img.png"
+        invoker.services.board_image_records.get_boards_for_images.return_value = {}
+        _seed_record(records, "img1.png")
+        _seed_record(records, "img2.png")
+
+        dtos = svc.get_dtos(["img2.png", "img1.png", "missing.png"])
+
+        assert len(dtos) == 2
+        assert dtos[0].image_name == "img2.png"
+        assert dtos[1].image_name == "img1.png"

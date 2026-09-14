@@ -1,4 +1,5 @@
 import sqlite3
+from collections.abc import Sequence
 from typing import Optional, cast
 
 from invokeai.app.services.board_image_records.board_image_records_base import BoardImageRecordStorageBase
@@ -149,6 +150,32 @@ class SqliteBoardImageRecordStorage(BoardImageRecordStorageBase):
             result = cast(list[sqlite3.Row], cursor.fetchall())
         image_names = [r[0] for r in result]
         return image_names
+
+    def get_boards_for_images(
+        self,
+        image_names: Sequence[str],
+    ) -> dict[str, str]:
+        unique_names = list(dict.fromkeys(image_names))
+        if not unique_names:
+            return {}
+
+        boards: dict[str, str] = {}
+        with self._db.transaction() as cursor:
+            for start in range(0, len(unique_names), 500):
+                chunk = unique_names[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor.execute(
+                    f"""--sql
+                    SELECT image_name, board_id
+                    FROM board_images
+                    WHERE image_name IN ({placeholders});
+                    """,
+                    chunk,
+                )
+                rows = cast(list[sqlite3.Row], cursor.fetchall())
+                for r in rows:
+                    boards[cast(str, r[0])] = cast(str, r[1])
+        return boards
 
     def get_board_for_image(
         self,

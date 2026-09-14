@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Callable, Optional
 
 from PIL.Image import Image as PILImageType
@@ -77,6 +78,11 @@ class ImageServiceABC(ABC):
     @abstractmethod
     def get_record(self, image_name: str) -> ImageRecord:
         """Gets an image record."""
+        pass
+
+    @abstractmethod
+    def get_dtos(self, image_names: Sequence[str]) -> list[ImageDTO]:
+        """Gets a list of image DTOs, preserving order and skipping missing images."""
         pass
 
     @abstractmethod
