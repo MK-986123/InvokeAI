@@ -246,9 +246,12 @@ class CachedModelWithPartialLoad:
         if len(keys_to_repair) == 0:
             return 0
 
-        self._load_state_dict_with_device_conversion(cur_state_dict, keys_to_repair, self._compute_device)
-        self._move_non_persistent_buffers_to_device(self._compute_device)
-        self._cur_vram_bytes = None
+        try:
+            self._load_state_dict_with_device_conversion(cur_state_dict, keys_to_repair, self._compute_device)
+            self._move_non_persistent_buffers_to_device(self._compute_device)
+        finally:
+            self._cur_vram_bytes = None
+
         return len(keys_to_repair)
 
     def _load_state_dict_with_device_conversion(
@@ -334,72 +337,73 @@ class CachedModelWithPartialLoad:
         Returns:
             The number of bytes loaded into VRAM.
         """
-        # TODO(ryand): Handle the case where an exception is thrown while loading or unloading weights. At the very
-        # least, we should reset self._cur_vram_bytes to None.
+        try:
+            vram_bytes_loaded = 0
 
-        vram_bytes_loaded = 0
+            cur_state_dict = self._model.state_dict()
 
-        cur_state_dict = self._model.state_dict()
+            # Identify the keys that will be loaded into VRAM.
+            keys_to_load: set[str] = set()
 
-        # Identify the keys that will be loaded into VRAM.
-        keys_to_load: set[str] = set()
+            # First, process the keys that *must* be loaded into VRAM.
+            for key in self._keys_in_modules_that_do_not_support_autocast:
+                param = cur_state_dict[key]
+                if param.device.type == self._compute_device.type:
+                    continue
 
-        # First, process the keys that *must* be loaded into VRAM.
-        for key in self._keys_in_modules_that_do_not_support_autocast:
-            param = cur_state_dict[key]
-            if param.device.type == self._compute_device.type:
-                continue
+                keys_to_load.add(key)
+                param_size = self._state_dict_bytes[key]
+                vram_bytes_loaded += param_size
 
-            keys_to_load.add(key)
-            param_size = self._state_dict_bytes[key]
-            vram_bytes_loaded += param_size
+            if vram_bytes_loaded > vram_bytes_to_load:
+                logger = InvokeAILogger.get_logger()
+                logger.warning(
+                    f"Loading {vram_bytes_loaded / 2**20} MB into VRAM, but only {vram_bytes_to_load / 2**20} MB were "
+                    "requested. This is the minimum set of weights in VRAM required to run the model."
+                )
 
-        if vram_bytes_loaded > vram_bytes_to_load:
-            logger = InvokeAILogger.get_logger()
-            logger.warning(
-                f"Loading {vram_bytes_loaded / 2**20} MB into VRAM, but only {vram_bytes_to_load / 2**20} MB were "
-                "requested. This is the minimum set of weights in VRAM required to run the model."
-            )
+            # Next, process the keys that can optionally be loaded into VRAM.
+            fully_loaded = True
+            for key, param in cur_state_dict.items():
+                # Skip the keys that have already been processed above.
+                if key in keys_to_load:
+                    continue
 
-        # Next, process the keys that can optionally be loaded into VRAM.
-        fully_loaded = True
-        for key, param in cur_state_dict.items():
-            # Skip the keys that have already been processed above.
-            if key in keys_to_load:
-                continue
+                if param.device.type == self._compute_device.type:
+                    continue
 
-            if param.device.type == self._compute_device.type:
-                continue
+                param_size = self._state_dict_bytes[key]
+                if vram_bytes_loaded + param_size > vram_bytes_to_load:
+                    # TODO(ryand): Should we just break here? If we couldn't fit this parameter into VRAM, is it really
+                    # worth continuing to search for a smaller parameter that would fit?
+                    fully_loaded = False
+                    continue
 
-            param_size = self._state_dict_bytes[key]
-            if vram_bytes_loaded + param_size > vram_bytes_to_load:
-                # TODO(ryand): Should we just break here? If we couldn't fit this parameter into VRAM, is it really
-                # worth continuing to search for a smaller parameter that would fit?
-                fully_loaded = False
-                continue
+                keys_to_load.add(key)
+                vram_bytes_loaded += param_size
 
-            keys_to_load.add(key)
-            vram_bytes_loaded += param_size
+            if len(keys_to_load) > 0:
+                # We load the entire state dict, not just the parameters that changed, in case there are modules that
+                # override _load_from_state_dict() and do some funky stuff that requires the entire state dict.
+                # Alternatively, in the future, grouping parameters by module could probably solve this problem.
+                self._load_state_dict_with_device_conversion(cur_state_dict, keys_to_load, self._compute_device)
 
-        if len(keys_to_load) > 0:
-            # We load the entire state dict, not just the parameters that changed, in case there are modules that
-            # override _load_from_state_dict() and do some funky stuff that requires the entire state dict.
-            # Alternatively, in the future, grouping parameters by module could probably solve this problem.
-            self._load_state_dict_with_device_conversion(cur_state_dict, keys_to_load, self._compute_device)
+            if self._cur_vram_bytes is not None:
+                self._cur_vram_bytes += vram_bytes_loaded
 
-        if self._cur_vram_bytes is not None:
-            self._cur_vram_bytes += vram_bytes_loaded
+            if fully_loaded:
+                self._set_autocast_enabled_in_all_modules(False)
+            else:
+                self._set_autocast_enabled_in_all_modules(True)
 
-        if fully_loaded:
-            self._set_autocast_enabled_in_all_modules(False)
-        else:
-            self._set_autocast_enabled_in_all_modules(True)
+            # Move all non-persistent buffers to the compute device. These are a weird edge case and do not participate in
+            # the vram_bytes_loaded tracking.
+            self._move_non_persistent_buffers_to_device(self._compute_device)
 
-        # Move all non-persistent buffers to the compute device. These are a weird edge case and do not participate in
-        # the vram_bytes_loaded tracking.
-        self._move_non_persistent_buffers_to_device(self._compute_device)
-
-        return vram_bytes_loaded
+            return vram_bytes_loaded
+        except Exception:
+            self._cur_vram_bytes = None
+            raise
 
     @torch.no_grad()
     def partial_unload_from_vram(self, vram_bytes_to_free: int, keep_required_weights_in_vram: bool = False) -> int:
@@ -411,36 +415,40 @@ class CachedModelWithPartialLoad:
         Returns:
             The number of bytes unloaded from VRAM.
         """
-        vram_bytes_freed = 0
-        required_weights_in_vram = 0
+        try:
+            vram_bytes_freed = 0
+            required_weights_in_vram = 0
 
-        offload_device = "cpu"
-        cur_state_dict = self._model.state_dict()
+            offload_device = "cpu"
+            cur_state_dict = self._model.state_dict()
 
-        # Identify the keys that will be offloaded to CPU.
-        keys_to_offload: set[str] = set()
+            # Identify the keys that will be offloaded to CPU.
+            keys_to_offload: set[str] = set()
 
-        for key, param in cur_state_dict.items():
-            if vram_bytes_freed >= vram_bytes_to_free:
-                break
+            for key, param in cur_state_dict.items():
+                if vram_bytes_freed >= vram_bytes_to_free:
+                    break
 
-            if param.device.type == offload_device:
-                continue
+                if param.device.type == offload_device:
+                    continue
 
-            if keep_required_weights_in_vram and key in self._keys_in_modules_that_do_not_support_autocast:
-                required_weights_in_vram += self._state_dict_bytes[key]
-                continue
+                if keep_required_weights_in_vram and key in self._keys_in_modules_that_do_not_support_autocast:
+                    required_weights_in_vram += self._state_dict_bytes[key]
+                    continue
 
-            keys_to_offload.add(key)
-            vram_bytes_freed += self._state_dict_bytes[key]
+                keys_to_offload.add(key)
+                vram_bytes_freed += self._state_dict_bytes[key]
 
-        if len(keys_to_offload) > 0:
-            self._load_state_dict_with_device_conversion(cur_state_dict, keys_to_offload, torch.device("cpu"))
+            if len(keys_to_offload) > 0:
+                self._load_state_dict_with_device_conversion(cur_state_dict, keys_to_offload, torch.device("cpu"))
 
-        if self._cur_vram_bytes is not None:
-            self._cur_vram_bytes -= vram_bytes_freed
+            if self._cur_vram_bytes is not None:
+                self._cur_vram_bytes -= vram_bytes_freed
 
-        # We may have gone from a fully-loaded model to a partially-loaded model, so we need to reapply the custom
-        # layers.
-        self._set_autocast_enabled_in_all_modules(True)
-        return vram_bytes_freed
+            # We may have gone from a fully-loaded model to a partially-loaded model, so we need to reapply the custom
+            # layers.
+            self._set_autocast_enabled_in_all_modules(True)
+            return vram_bytes_freed
+        except Exception:
+            self._cur_vram_bytes = None
+            raise
