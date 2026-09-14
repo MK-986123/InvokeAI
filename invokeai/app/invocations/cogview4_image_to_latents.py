@@ -1,6 +1,7 @@
 import einops
 import torch
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
+from pydantic import field_validator
 
 from invokeai.app.invocations.baseinvocation import BaseInvocation, Classification, invocation
 from invokeai.app.invocations.fields import (
@@ -14,6 +15,7 @@ from invokeai.app.invocations.fields import (
 from invokeai.app.invocations.model import VAEField
 from invokeai.app.invocations.primitives import LatentsOutput
 from invokeai.app.services.shared.invocation_context import InvocationContext
+from invokeai.app.util.misc import SEED_MAX
 from invokeai.backend.model_manager.load.load_base import LoadedModel
 from invokeai.backend.stable_diffusion.diffusers_pipeline import image_resized_to_grid_as_tensor
 from invokeai.backend.util.devices import TorchDevice
@@ -28,7 +30,7 @@ from invokeai.backend.util.vae_working_memory import estimate_vae_working_memory
     title="Image to Latents - CogView4",
     tags=["image", "latents", "vae", "i2l", "cogview4"],
     category="latents",
-    version="1.0.0",
+    version="1.1.0",
     classification=Classification.Prototype,
 )
 class CogView4ImageToLatentsInvocation(BaseInvocation, WithMetadata, WithBoard):
@@ -36,9 +38,20 @@ class CogView4ImageToLatentsInvocation(BaseInvocation, WithMetadata, WithBoard):
 
     image: ImageField = InputField(description="The image to encode.")
     vae: VAEField = InputField(description=FieldDescriptions.vae, input=Input.Connection)
+    seed: int = InputField(
+        default=0,
+        ge=0,
+        le=SEED_MAX,
+        description=FieldDescriptions.seed,
+    )
+
+    @field_validator("seed", mode="before")
+    def modulo_seed(cls, v):
+        """Return the seed modulo (SEED_MAX + 1) to ensure it is within the valid range."""
+        return v % (SEED_MAX + 1)
 
     @staticmethod
-    def vae_encode(vae_info: LoadedModel, image_tensor: torch.Tensor) -> torch.Tensor:
+    def vae_encode(vae_info: LoadedModel, image_tensor: torch.Tensor, seed: int) -> torch.Tensor:
         assert isinstance(vae_info.model, AutoencoderKL)
         estimated_working_memory = estimate_vae_working_memory_cogview4(
             operation="encode", image_tensor=image_tensor, vae=vae_info.model
@@ -51,8 +64,8 @@ class CogView4ImageToLatentsInvocation(BaseInvocation, WithMetadata, WithBoard):
             image_tensor = image_tensor.to(device=TorchDevice.choose_torch_device(), dtype=vae.dtype)
             with torch.inference_mode():
                 image_tensor_dist = vae.encode(image_tensor).latent_dist
-                # TODO: Use seed to make sampling reproducible.
-                latents: torch.Tensor = image_tensor_dist.sample().to(dtype=vae.dtype)
+                generator = torch.Generator(device=TorchDevice.choose_torch_device()).manual_seed(seed)
+                latents: torch.Tensor = image_tensor_dist.sample(generator=generator).to(dtype=vae.dtype)
 
             latents = vae.config.scaling_factor * latents
 
@@ -69,8 +82,8 @@ class CogView4ImageToLatentsInvocation(BaseInvocation, WithMetadata, WithBoard):
         vae_info = context.models.load(self.vae.vae)
         assert isinstance(vae_info.model, AutoencoderKL)
 
-        latents = self.vae_encode(vae_info=vae_info, image_tensor=image_tensor)
+        latents = self.vae_encode(vae_info=vae_info, image_tensor=image_tensor, seed=self.seed)
 
         latents = latents.to("cpu")
         name = context.tensors.save(tensor=latents)
-        return LatentsOutput.build(latents_name=name, latents=latents, seed=None)
+        return LatentsOutput.build(latents_name=name, latents=latents, seed=self.seed)

@@ -12,6 +12,7 @@ from diffusers.models.attention_processor import (
 )
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from diffusers.models.autoencoders.autoencoder_tiny import AutoencoderTiny
+from pydantic import field_validator
 
 from invokeai.app.invocations.baseinvocation import BaseInvocation, invocation
 from invokeai.app.invocations.constants import LATENT_SCALE_FACTOR
@@ -24,6 +25,7 @@ from invokeai.app.invocations.fields import (
 from invokeai.app.invocations.model import BaseModelType, VAEField
 from invokeai.app.invocations.primitives import LatentsOutput
 from invokeai.app.services.shared.invocation_context import InvocationContext
+from invokeai.app.util.misc import SEED_MAX
 from invokeai.backend.model_manager.load.load_base import LoadedModel
 from invokeai.backend.stable_diffusion.diffusers_pipeline import image_resized_to_grid_as_tensor
 from invokeai.backend.stable_diffusion.vae_tiling import patch_vae_tiling_params
@@ -44,7 +46,7 @@ COLOR_COMPENSATION_MAP = {"None": [1, 0], "SDXL": [1.015, -0.002]}
     title="Image to Latents - SD1.5, SDXL",
     tags=["latents", "image", "vae", "i2l"],
     category="latents",
-    version="1.2.0",
+    version="1.3.0",
 )
 class ImageToLatentsInvocation(BaseInvocation):
     """Encodes an image into latents."""
@@ -65,6 +67,17 @@ class ImageToLatentsInvocation(BaseInvocation):
         default="None",
         description="Apply VAE scaling compensation when encoding images (reduces color drift).",
     )
+    seed: int = InputField(
+        default=0,
+        ge=0,
+        le=SEED_MAX,
+        description=FieldDescriptions.seed,
+    )
+
+    @field_validator("seed", mode="before")
+    def modulo_seed(cls, v):
+        """Return the seed modulo (SEED_MAX + 1) to ensure it is within the valid range."""
+        return v % (SEED_MAX + 1)
 
     @classmethod
     def vae_encode(
@@ -74,6 +87,7 @@ class ImageToLatentsInvocation(BaseInvocation):
         tiled: bool,
         image_tensor: torch.Tensor,
         tile_size: int = 0,
+        seed: int = 0,
     ) -> torch.Tensor:
         assert isinstance(vae_info.model, (AutoencoderKL, AutoencoderTiny)), "VAE must be of type SD-1.5 or SDXL"
         estimated_working_memory = estimate_vae_working_memory_sd15_sdxl(
@@ -128,7 +142,7 @@ class ImageToLatentsInvocation(BaseInvocation):
             # non_noised_latents_from_image
             image_tensor = image_tensor.to(device=TorchDevice.choose_torch_device(), dtype=vae.dtype)
             with torch.inference_mode(), tiling_context:
-                latents = ImageToLatentsInvocation._encode_to_tensor(vae, image_tensor)
+                latents = ImageToLatentsInvocation._encode_to_tensor(vae, image_tensor, seed=seed)
 
             latents = vae.config.scaling_factor * latents
             latents = latents.to(dtype=orig_dtype)
@@ -158,25 +172,25 @@ class ImageToLatentsInvocation(BaseInvocation):
             tiled=self.tiled or context.config.get().force_tiled_decode,
             image_tensor=image_tensor,
             tile_size=self.tile_size,
+            seed=self.seed,
         )
 
         latents = latents.to("cpu")
         name = context.tensors.save(tensor=latents)
-        return LatentsOutput.build(latents_name=name, latents=latents, seed=None)
+        return LatentsOutput.build(latents_name=name, latents=latents, seed=self.seed)
 
     @singledispatchmethod
     @staticmethod
-    def _encode_to_tensor(vae: AutoencoderKL, image_tensor: torch.FloatTensor) -> torch.FloatTensor:
+    def _encode_to_tensor(vae: AutoencoderKL, image_tensor: torch.FloatTensor, seed: int = 0) -> torch.FloatTensor:
         assert isinstance(vae, torch.nn.Module)
         image_tensor_dist = vae.encode(image_tensor).latent_dist
-        latents: torch.Tensor = image_tensor_dist.sample().to(
-            dtype=vae.dtype
-        )  # FIXME: uses torch.randn. make reproducible!
+        generator = torch.Generator(device=TorchDevice.choose_torch_device()).manual_seed(seed)
+        latents: torch.Tensor = image_tensor_dist.sample(generator=generator).to(dtype=vae.dtype)
         return latents
 
     @_encode_to_tensor.register
     @staticmethod
-    def _(vae: AutoencoderTiny, image_tensor: torch.FloatTensor) -> torch.FloatTensor:
+    def _(vae: AutoencoderTiny, image_tensor: torch.FloatTensor, seed: int = 0) -> torch.FloatTensor:
         assert isinstance(vae, torch.nn.Module)
         latents: torch.FloatTensor = vae.encode(image_tensor).latents
         return latents
