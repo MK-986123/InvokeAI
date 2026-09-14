@@ -6,7 +6,7 @@ def validate_hash(hash: str):
     if ":" not in hash:
         return
     for enc_hash in hashes:
-        alg, hash_ = hash.split(":")
+        alg, hash_ = hash.split(":", 1)
         if alg == "blake3":
             alg = "blake3_single"
         map = json.loads(b64decode(enc_hash))

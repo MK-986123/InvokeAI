@@ -10,6 +10,7 @@ def test_validate_hash_no_colon():
     # Hashes without colons should be ignored without raising exceptions
     validate_hash("invalidhash")
     validate_hash("")
+    validate_hash("sha256:invalid:hash")
 
 
 def test_validate_hash_allowed_hash():
