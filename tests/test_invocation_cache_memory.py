@@ -14,7 +14,7 @@ def test_invocation_cache_memory_max_cache_size():
     cache.save(1, output_1)
     assert cache.get(1) is None
     assert cache._hits == 0
-    assert cache._misses == 0  # TODO: when cache size is zero, should we consider it a miss?
+    assert cache._misses == 0
     assert len(cache._cache) == 0
 
 
