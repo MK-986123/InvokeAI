@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Optional
 
@@ -19,6 +20,11 @@ class ImageRecordStorageBase(ABC):
     """Low-level service responsible for interfacing with the image record store."""
 
     # TODO: Implement an `update()` method
+
+    @abstractmethod
+    def get_many_by_names(self, image_names: Sequence[str]) -> dict[str, ImageRecord]:
+        """Gets image records for a sequence of image names, keyed by image_name. Missing names are omitted."""
+        pass
 
     @abstractmethod
     def get(self, image_name: str) -> ImageRecord:

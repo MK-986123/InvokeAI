@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Optional
 
@@ -244,6 +244,29 @@ class ImageService(ImageServiceABC):
             raise
         except Exception as e:
             self.__invoker.services.logger.error("Problem getting image record")
+            raise e
+
+    def get_dtos(self, image_names: Sequence[str]) -> list[ImageDTO]:
+        try:
+            records = self.__invoker.services.image_records.get_many_by_names(image_names)
+            board_ids = self.__invoker.services.board_image_records.get_boards_for_images(image_names)
+
+            image_dtos: list[ImageDTO] = []
+            for name in image_names:
+                image_record = records.get(name)
+                if image_record is None:
+                    continue
+                image_dto = image_record_to_dto(
+                    image_record=image_record,
+                    image_url=self.__invoker.services.urls.get_image_url(name),
+                    thumbnail_url=self.__invoker.services.urls.get_image_url(name, True),
+                    board_id=board_ids.get(name),
+                )
+                image_dtos.append(image_dto)
+
+            return image_dtos
+        except Exception as e:
+            self.__invoker.services.logger.error("Problem getting image DTOs")
             raise e
 
     def get_dto(self, image_name: str) -> ImageDTO:

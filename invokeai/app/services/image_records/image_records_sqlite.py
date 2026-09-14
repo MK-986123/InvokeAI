@@ -1,4 +1,5 @@
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Optional, Union, cast
 
@@ -30,6 +31,29 @@ class SqliteImageRecordStorage(ImageRecordStorageBase):
     def __init__(self, db: SqliteDatabase) -> None:
         super().__init__()
         self._db = db
+
+    def get_many_by_names(self, image_names: Sequence[str]) -> dict[str, ImageRecord]:
+        unique_names = list(dict.fromkeys(image_names))
+        if not unique_names:
+            return {}
+
+        records: dict[str, ImageRecord] = {}
+        with self._db.transaction() as cursor:
+            for start in range(0, len(unique_names), self._MAX_SQL_VARIABLES):
+                chunk = unique_names[start : start + self._MAX_SQL_VARIABLES]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor.execute(
+                    f"""--sql
+                    SELECT {IMAGE_DTO_COLS} FROM images
+                    WHERE image_name IN ({placeholders});
+                    """,
+                    chunk,
+                )
+                rows = cast(list[sqlite3.Row], cursor.fetchall())
+                for r in rows:
+                    record = deserialize_image_record(dict(r))
+                    records[record.image_name] = record
+        return records
 
     def get(self, image_name: str) -> ImageRecord:
         # A sqlite3.Error is deliberately NOT translated into ImageRecordNotFoundException.
