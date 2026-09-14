@@ -125,9 +125,8 @@ class IAIOnnxRuntimeModel(RawModel):
 
         self.tensors = self._tensor_access(self)  # type: ignore
 
-    # TODO: integrate with model manager/cache
     def create_session(self, height=None, width=None):
-        if self.session is None or self.session_width != width or self.session_height != height:
+        if self.session is None or getattr(self, 'session_width', None) != width or getattr(self, 'session_height', None) != height:
             # onnx.save(self.proto, "tmp.onnx")
             # onnx.save_model(self.proto, "tmp.onnx", save_as_external_data=True, all_tensors_to_one_file=True, location="tmp.onnx_data", size_threshold=1024, convert_attribute=False)
             # TODO: something to be able to get weight when they already moved outside of model proto
@@ -177,7 +176,7 @@ class IAIOnnxRuntimeModel(RawModel):
 
     def __call__(self, **kwargs):
         if self.session is None:
-            raise Exception("You should call create_session before running model")
+            self.create_session()
 
         inputs = {k: np.array(v) for k, v in kwargs.items()}
         # output_names = self.session.get_outputs()
@@ -191,7 +190,28 @@ class IAIOnnxRuntimeModel(RawModel):
 
     # compatability with RawModel ABC
     def to(self, device: Optional[torch.device] = None, dtype: Optional[torch.dtype] = None) -> None:
-        pass
+        if device is None:
+            return
+
+        available_providers = get_available_providers()
+
+        if device.type == "cuda":
+            if "CUDAExecutionProvider" in available_providers:
+                self.provider = "CUDAExecutionProvider"
+            elif "ROCMExecutionProvider" in available_providers:
+                self.provider = "ROCMExecutionProvider"
+            else:
+                self.provider = "CPUExecutionProvider"
+            self.create_session()
+        elif device.type == "mps":
+            if "CoreMLExecutionProvider" in available_providers:
+                self.provider = "CoreMLExecutionProvider"
+            else:
+                self.provider = "CPUExecutionProvider"
+            self.create_session()
+        else:
+            self.provider = "CPUExecutionProvider"
+            self.release_session()
 
     # compatability with diffusers load code
     @classmethod
