@@ -593,11 +593,13 @@ def delete_videos_from_list(
     # Dedup while preserving order: a name repeated in the request would otherwise be
     # processed twice, and the second pass's not-found error would land the same name
     # in both deleted_videos and failed_videos.
-    for video_name in dict.fromkeys(batch.video_names):
+    unique_video_names = list(dict.fromkeys(batch.video_names))
+    board_ids = ApiDependencies.invoker.services.board_video_records.get_boards_for_videos(unique_video_names)
+    for video_name in unique_video_names:
         try:
             _assert_video_owner(video_name, current_user)
-            video_dto = ApiDependencies.invoker.services.videos.get_dto(video_name)
-            board_id = video_dto.board_id or "none"
+            raw_board_id = board_ids.get(video_name) if isinstance(board_ids, dict) else None
+            board_id = raw_board_id if isinstance(raw_board_id, str) else "none"
             ApiDependencies.invoker.services.videos.delete(video_name)
             deleted_videos.add(video_name)
             affected_boards.add(board_id)

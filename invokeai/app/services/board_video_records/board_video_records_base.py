@@ -41,3 +41,8 @@ class BoardVideoRecordStorageBase(ABC):
     def get_video_count_for_board(self, board_id: str) -> int:
         """Gets the number of videos for a board."""
         pass
+
+    @abstractmethod
+    def get_boards_for_videos(self, video_names: list[str]) -> dict[str, str]:
+        """Gets board IDs for a list of video names, returning a mapping of {video_name: board_id}."""
+        pass
