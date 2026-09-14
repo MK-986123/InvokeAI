@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Optional
 
 from invokeai.app.services.image_records.image_records_common import ImageCategory
@@ -68,4 +69,12 @@ class BoardImageRecordStorageBase(ABC):
         board_id: str,
     ) -> int:
         """Gets the number of assets for a board."""
+        pass
+
+    @abstractmethod
+    def get_boards_for_images(
+        self,
+        image_names: Sequence[str],
+    ) -> dict[str, str]:
+        """Gets board ids for multiple images as a mapping of {image_name: board_id}."""
         pass
