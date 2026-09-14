@@ -343,12 +343,19 @@ def remove_images_from_board(
     try:
         assert_image_move_maintenance_inactive()
     except HTTPException:
+        board_images_service = getattr(ApiDependencies.invoker.services, "board_images", None)
+        board_map = (
+            board_images_service.get_boards_for_images(image_names)
+            if board_images_service is not None and hasattr(board_images_service, "get_boards_for_images")
+            else None
+        )
         for image_name in image_names:
             try:
-                old_board_id = ApiDependencies.invoker.services.images.get_dto(image_name).board_id or "none"
+                if isinstance(board_map, dict) and image_name in board_map:
+                    old_board_id = board_map[image_name] or "none"
+                else:
+                    old_board_id = ApiDependencies.invoker.services.images.get_dto(image_name).board_id or "none"
             except ImageRecordNotFoundException:
-                # A name deleted by a concurrent session. The main loop treats that as a skip;
-                # letting it escape from inside this handler would replace the 409 with a 500.
                 continue
             if old_board_id != "none":
                 _assert_board_write_access(old_board_id, current_user)
@@ -364,9 +371,20 @@ def remove_images_from_board(
 
         # Dedup while preserving order — a repeated name would otherwise be processed twice
         # and could land in both removed_images and failed_images.
-        for image_name in dict.fromkeys(image_names):
+        unique_image_names = list(dict.fromkeys(image_names))
+        board_images_service = getattr(ApiDependencies.invoker.services, "board_images", None)
+        board_map = (
+            board_images_service.get_boards_for_images(unique_image_names)
+            if board_images_service is not None and hasattr(board_images_service, "get_boards_for_images")
+            else None
+        )
+
+        for image_name in unique_image_names:
             try:
-                old_board_id = ApiDependencies.invoker.services.images.get_dto(image_name).board_id or "none"
+                if isinstance(board_map, dict) and image_name in board_map:
+                    old_board_id = board_map[image_name] or "none"
+                else:
+                    old_board_id = ApiDependencies.invoker.services.images.get_dto(image_name).board_id or "none"
             except ImageRecordNotFoundException:
                 # The image is gone — deleted by a concurrent session between the client
                 # building its selection and this request. That is a skip, not a failure, and

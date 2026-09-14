@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Optional
 
 from invokeai.app.services.board_images.board_images_base import BoardImagesServiceABC
@@ -45,3 +46,9 @@ class BoardImagesService(BoardImagesServiceABC):
     ) -> Optional[str]:
         board_id = self.__invoker.services.board_image_records.get_board_for_image(image_name)
         return board_id
+
+    def get_boards_for_images(
+        self,
+        image_names: Sequence[str],
+    ) -> dict[str, str]:
+        return self.__invoker.services.board_image_records.get_boards_for_images(image_names)
