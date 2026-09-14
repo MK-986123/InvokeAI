@@ -1,3 +1,5 @@
+from typing import Optional
+
 import einops
 import torch
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
@@ -32,9 +34,10 @@ class SD3ImageToLatentsInvocation(BaseInvocation, WithMetadata, WithBoard):
 
     image: ImageField = InputField(description="The image to encode")
     vae: VAEField = InputField(description=FieldDescriptions.vae, input=Input.Connection)
+    seed: Optional[int] = InputField(default=None, description=FieldDescriptions.seed)
 
     @staticmethod
-    def vae_encode(vae_info: LoadedModel, image_tensor: torch.Tensor) -> torch.Tensor:
+    def vae_encode(vae_info: LoadedModel, image_tensor: torch.Tensor, seed: Optional[int] = None) -> torch.Tensor:
         assert isinstance(vae_info.model, AutoencoderKL)
         estimated_working_memory = estimate_vae_working_memory_sd3(
             operation="encode", image_tensor=image_tensor, vae=vae_info.model
@@ -47,8 +50,11 @@ class SD3ImageToLatentsInvocation(BaseInvocation, WithMetadata, WithBoard):
             image_tensor = image_tensor.to(device=TorchDevice.choose_torch_device(), dtype=vae.dtype)
             with torch.inference_mode():
                 image_tensor_dist = vae.encode(image_tensor).latent_dist
-                # TODO: Use seed to make sampling reproducible.
-                latents: torch.Tensor = image_tensor_dist.sample().to(dtype=vae.dtype)
+
+                generator = None
+                if seed is not None:
+                    generator = torch.Generator(device=image_tensor.device).manual_seed(seed)
+                latents: torch.Tensor = image_tensor_dist.sample(generator=generator).to(dtype=vae.dtype)
 
             latents = vae.config.scaling_factor * latents
 
@@ -65,8 +71,8 @@ class SD3ImageToLatentsInvocation(BaseInvocation, WithMetadata, WithBoard):
         vae_info = context.models.load(self.vae.vae)
         assert isinstance(vae_info.model, AutoencoderKL)
 
-        latents = self.vae_encode(vae_info=vae_info, image_tensor=image_tensor)
+        latents = self.vae_encode(vae_info=vae_info, image_tensor=image_tensor, seed=self.seed)
 
         latents = latents.to("cpu")
         name = context.tensors.save(tensor=latents)
-        return LatentsOutput.build(latents_name=name, latents=latents, seed=None)
+        return LatentsOutput.build(latents_name=name, latents=latents, seed=self.seed)
