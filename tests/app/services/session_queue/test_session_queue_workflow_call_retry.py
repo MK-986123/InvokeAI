@@ -84,6 +84,7 @@ def test_retry_items_by_id_retries_root_once_for_child_chain_item(
 
     items = {root_item.item_id: root_item, child_item.item_id: child_item}
     monkeypatch.setattr(session_queue, "get_queue_item", lambda item_id: items[item_id])
+    monkeypatch.setattr(session_queue, "_get_queue_items_by_id", lambda item_ids: [items[item_id] for item_id in item_ids if item_id in items])
 
     retry_result = session_queue.retry_items_by_id("default", [child_item.item_id, root_item.item_id])
 
@@ -119,6 +120,7 @@ def test_retry_items_by_id_emits_unique_owner_ids_for_multiple_roots(
         second_root_item.item_id: second_root_item,
     }
     monkeypatch.setattr(session_queue, "get_queue_item", lambda item_id: items[item_id])
+    monkeypatch.setattr(session_queue, "_get_queue_items_by_id", lambda item_ids: [items[item_id] for item_id in item_ids if item_id in items])
 
     retry_result = session_queue.retry_items_by_id("default", [first_root_item.item_id, second_root_item.item_id])
 
