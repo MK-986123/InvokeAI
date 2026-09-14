@@ -9,6 +9,7 @@ from invokeai.app.invocations.baseinvocation import InvocationRegistry
 from invokeai.app.services.config.config_default import (
     DefaultInvokeAIAppConfig,
     InvokeAIAppConfig,
+    ensure_fonts_dir,
     get_config,
     load_and_migrate_config,
 )
@@ -80,6 +81,15 @@ def test_path_resolution_root_not_set(patch_rootdir: None):
     assert config.root_path == expected_root
 
 
+def test_wan_memory_optimization_defaults_to_false_and_loads_from_yaml(tmp_path: Path, patch_rootdir: None) -> None:
+    assert InvokeAIAppConfig().wan_memory_optimization is False
+
+    temp_config_file = tmp_path / "temp_invokeai.yaml"
+    temp_config_file.write_text('schema_version: "4.0.3"\nwan_memory_optimization: true\n')
+
+    assert load_and_migrate_config(temp_config_file).wan_memory_optimization is True
+
+
 def test_read_config_from_file(tmp_path: Path, patch_rootdir: None):
     """Test reading configuration from a file."""
     temp_config_file = tmp_path / "temp_invokeai.yaml"
@@ -88,6 +98,15 @@ def test_read_config_from_file(tmp_path: Path, patch_rootdir: None):
     config = load_and_migrate_config(temp_config_file)
     assert config.host == "192.168.1.1"
     assert config.port == 8080
+
+
+def test_pid_memory_optimization_defaults_to_false_and_loads_from_yaml(tmp_path: Path, patch_rootdir: None) -> None:
+    assert InvokeAIAppConfig().pid_memory_optimization is False
+
+    temp_config_file = tmp_path / "temp_invokeai.yaml"
+    temp_config_file.write_text('schema_version: "4.0.3"\npid_memory_optimization: true\n')
+
+    assert load_and_migrate_config(temp_config_file).pid_memory_optimization is True
 
 
 def test_migrate_v3_config_from_file(tmp_path: Path, patch_rootdir: None):
@@ -269,6 +288,8 @@ def test_get_config_writing(patch_rootdir: None, monkeypatch: pytest.MonkeyPatch
     assert config.config_file_path == config_file_path
     assert config_file_path.exists()
     assert example_file_path.exists()
+    assert (tmp_path / "fonts").exists()
+    assert (tmp_path / "fonts" / "README.txt").exists()
 
     # The example file should have the default values
     example_file_content = example_file_path.read_text()
@@ -284,6 +305,25 @@ def test_get_config_writing(patch_rootdir: None, monkeypatch: pytest.MonkeyPatch
 
     # Undo our change to the singleton class
     InvokeAIArgs.did_parse = False
+
+
+def test_ensure_fonts_dir_logs_warning_on_oserror(
+    patch_rootdir: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    original_mkdir = Path.mkdir
+    fonts_path = tmp_path / "fonts"
+
+    def mock_mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == fonts_path:
+            raise OSError("read-only")
+        original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mock_mkdir)
+
+    with caplog.at_level("WARNING"):
+        ensure_fonts_dir(fonts_path)
+
+    assert "Unable to initialize fonts directory" in caplog.text
 
 
 def test_get_config_reads_external_api_keys_file(patch_rootdir: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
