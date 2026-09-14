@@ -47,5 +47,5 @@ export const useBuildModelInstallArg = () => {
     };
   }, []);
 
-  return { getIsInstalled, buildModelInstallArg };
+  return { getIsInstalled, buildModelInstallArg, modelList };
 };
