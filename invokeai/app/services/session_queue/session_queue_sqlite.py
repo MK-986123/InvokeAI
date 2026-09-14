@@ -807,10 +807,24 @@ class SqliteSessionQueue(SessionQueueBase):
     def delete_queue_item(self, item_id: int) -> None:
         """Deletes a session queue item"""
         chain_item_ids = self._get_workflow_call_chain_item_ids(item_id)
-        if any(
-            self.get_queue_item(chain_item_id).status not in {"completed", "failed", "canceled"}
-            for chain_item_id in chain_item_ids
-        ):
+        if not chain_item_ids:
+            return
+
+        placeholders = ", ".join(["?"] * len(chain_item_ids))
+        with self._db.transaction() as cursor:
+            cursor.execute(
+                f"""--sql
+                SELECT 1
+                FROM session_queue
+                WHERE item_id IN ({placeholders})
+                  AND status NOT IN ('completed', 'failed', 'canceled')
+                LIMIT 1;
+                """,
+                tuple(chain_item_ids),
+            )
+            has_active_items = cursor.fetchone() is not None
+
+        if has_active_items:
             self.cancel_queue_item(item_id)
         self.delete_queue_items_by_id(chain_item_ids)
 
