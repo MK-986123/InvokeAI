@@ -562,13 +562,6 @@ class StableDiffusionGeneratorPipeline(StableDiffusionPipeline):
             guidance_scale = guidance_scale[step_index]
 
         noise_pred = self.invokeai_diffuser._combine(uc_noise_pred, c_noise_pred, guidance_scale)
-        guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
-        if guidance_rescale_multiplier > 0:
-            noise_pred = self._rescale_cfg(
-                noise_pred,
-                c_noise_pred,
-                guidance_rescale_multiplier,
-            )
 
         # compute the previous noisy sample x_t -> x_t-1
         step_output = self.scheduler.step(noise_pred, timestep, latents, **scheduler_step_kwargs)
@@ -587,31 +580,3 @@ class StableDiffusionGeneratorPipeline(StableDiffusionPipeline):
                 step_output.pred_original_sample = mask_guidance(latents, self.scheduler.timesteps[-1])
 
         return step_output
-
-    @staticmethod
-    def _rescale_cfg(total_noise_pred, pos_noise_pred, multiplier=0.7):
-        """Implementation of Algorithm 2 from https://arxiv.org/pdf/2305.08891.pdf."""
-        ro_pos = torch.std(pos_noise_pred, dim=(1, 2, 3), keepdim=True)
-        ro_cfg = torch.std(total_noise_pred, dim=(1, 2, 3), keepdim=True)
-
-        x_rescaled = total_noise_pred * (ro_pos / ro_cfg)
-        x_final = multiplier * x_rescaled + (1.0 - multiplier) * total_noise_pred
-        return x_final
-
-    def _unet_forward(
-        self,
-        latents,
-        t,
-        text_embeddings,
-        cross_attention_kwargs: Optional[dict[str, Any]] = None,
-        **kwargs,
-    ):
-        """predict the noise residual"""
-        # First three args should be positional, not keywords, so torch hooks can see them.
-        return self.unet(
-            latents,
-            t,
-            text_embeddings,
-            cross_attention_kwargs=cross_attention_kwargs,
-            **kwargs,
-        ).sample
