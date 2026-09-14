@@ -20,6 +20,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   PiArrowClockwiseBold,
+  PiBroomBold,
   PiCheckBold,
   PiMinusBold,
   PiPauseFill,
@@ -45,7 +46,7 @@ type ModelListItemProps = {
   installJob: ModelInstallJob;
 };
 
-type QueueItemAction = 'cancel' | 'pause' | 'resume' | 'restartFailed' | 'restartFile';
+type QueueItemAction = 'cancel' | 'pause' | 'resume' | 'restartFailed' | 'restartFile' | 'prune';
 type OptimisticStatusState = {
   status: ModelInstallStatus;
   previousStatus: ModelInstallStatus | undefined;
@@ -57,6 +58,7 @@ const OPTIMISTIC_STATUS_BY_ACTION: Record<QueueItemAction, ModelInstallStatus> =
   resume: 'waiting',
   restartFailed: 'waiting',
   restartFile: 'waiting',
+  prune: 'completed',
 };
 
 const isRestartableStatus = (status?: ModelInstallStatus) => status === 'paused' || status === 'error';
@@ -163,6 +165,26 @@ export const ModelInstallQueueItem = memo((props: ModelListItemProps) => {
         setOptimisticStatus(null);
         toast({
           id: 'MODEL_INSTALL_CANCEL_FAILED',
+          title: getApiErrorDetail(error),
+          status: 'error',
+        });
+      }
+    });
+  }, [deleteImportModel, installJob.id, installJob.status, t, withRowActionLock]);
+
+  const handlePruneModelInstall = useCallback(() => {
+    void withRowActionLock('prune', installJob.status, async () => {
+      try {
+        await deleteImportModel(installJob.id).unwrap();
+        toast({
+          id: 'MODEL_INSTALL_PRUNED',
+          title: t('toast.prunedQueue'),
+          status: 'success',
+        });
+      } catch (error) {
+        setOptimisticStatus(null);
+        toast({
+          id: 'MODEL_INSTALL_PRUNE_FAILED',
           title: getApiErrorDetail(error),
           status: 'error',
         });
@@ -390,6 +412,8 @@ export const ModelInstallQueueItem = memo((props: ModelListItemProps) => {
     displayStatus === 'downloads_done' ||
     displayStatus === 'running' ||
     displayStatus === 'paused';
+  const canPrune =
+    displayStatus === 'completed' || displayStatus === 'error' || displayStatus === 'cancelled';
 
   const isActiveInstall =
     displayStatus === 'downloading' ||
@@ -555,8 +579,19 @@ export const ModelInstallQueueItem = memo((props: ModelListItemProps) => {
             />
           )}
 
-          {!canCancel && !canPause && !canResume && (
-            // TODO: Add an individual prune action here?
+          {/* Prune installation */}
+          {canPrune && (
+            <IconButton
+              tooltip={t('modelManager.prune')}
+              icon={<PiBroomBold />}
+              aria-label={t('modelManager.prune')}
+              onClick={handlePruneModelInstall}
+              size="sm"
+              isDisabled={isActionInFlight}
+            />
+          )}
+
+          {!canCancel && !canPause && !canResume && !canPrune && (
             <Text fontSize="2xs">No actions available</Text>
           )}
         </Flex>
