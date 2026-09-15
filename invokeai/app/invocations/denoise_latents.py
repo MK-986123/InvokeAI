@@ -381,7 +381,6 @@ class DenoiseLatentsInvocation(BaseInvocation):
         dtype: torch.dtype,
         cfg_scale: float | list[float],
         steps: int,
-        cfg_rescale_multiplier: float,
     ) -> TextConditioningData:
         # Normalize positive_conditioning_field and negative_conditioning_field to lists.
         cond_list = positive_conditioning_field
@@ -422,7 +421,6 @@ class DenoiseLatentsInvocation(BaseInvocation):
             uncond_regions=uncond_regions,
             cond_regions=cond_regions,
             guidance_scale=cfg_scale,
-            guidance_rescale_multiplier=cfg_rescale_multiplier,
         )
         return conditioning_data
 
@@ -889,8 +887,6 @@ class DenoiseLatentsInvocation(BaseInvocation):
             latent_width=latent_width,
             device=device,
             dtype=dtype,
-            # TODO: old backend, remove
-            cfg_rescale_multiplier=self.cfg_rescale_multiplier,
         )
 
         scheduler = get_scheduler(
@@ -1113,7 +1109,6 @@ class DenoiseLatentsInvocation(BaseInvocation):
                 latent_width=latent_width,
                 cfg_scale=self.cfg_scale,
                 steps=self.steps,
-                cfg_rescale_multiplier=self.cfg_rescale_multiplier,
             )
 
             controlnet_data = self.prep_control_data(
