@@ -265,6 +265,29 @@ class ImageService(ImageServiceABC):
             self.__invoker.services.logger.error("Problem getting image DTO")
             raise e
 
+    def get_dto_many(self, image_names: list[str]) -> dict[str, ImageDTO]:
+        try:
+            unique_names = list(dict.fromkeys(image_names))
+            if not unique_names:
+                return {}
+
+            records_map = self.__invoker.services.image_records.get_records_by_names(unique_names)
+            boards_map = self.__invoker.services.board_image_records.get_boards_for_images(unique_names)
+
+            dtos: dict[str, ImageDTO] = {}
+            for name, record in records_map.items():
+                dtos[name] = image_record_to_dto(
+                    image_record=record,
+                    image_url=self.__invoker.services.urls.get_image_url(name),
+                    thumbnail_url=self.__invoker.services.urls.get_image_url(name, True),
+                    board_id=boards_map.get(name),
+                )
+
+            return dtos
+        except Exception as e:
+            self.__invoker.services.logger.error("Problem getting image DTOs in bulk")
+            raise e
+
     def get_metadata(self, image_name: str) -> Optional[MetadataField]:
         try:
             return self.__invoker.services.image_records.get_metadata(image_name)
@@ -352,12 +375,15 @@ class ImageService(ImageServiceABC):
                 is_admin,
             )
 
+            item_names = [r.image_name for r in results.items]
+            boards_map = self.__invoker.services.board_image_records.get_boards_for_images(item_names)
+
             image_dtos = [
                 image_record_to_dto(
                     image_record=r,
                     image_url=self.__invoker.services.urls.get_image_url(r.image_name),
                     thumbnail_url=self.__invoker.services.urls.get_image_url(r.image_name, True),
-                    board_id=self.__invoker.services.board_image_records.get_board_for_image(r.image_name),
+                    board_id=boards_map.get(r.image_name),
                 )
                 for r in results.items
             ]

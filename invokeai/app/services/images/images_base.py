@@ -9,6 +9,7 @@ from invokeai.app.services.image_records.image_records_common import (
     ImageNamesResult,
     ImageRecord,
     ImageRecordChanges,
+    ImageRecordNotFoundException,
     ResourceOrigin,
 )
 from invokeai.app.services.images.images_common import ImageDTO
@@ -83,6 +84,16 @@ class ImageServiceABC(ABC):
     def get_dto(self, image_name: str) -> ImageDTO:
         """Gets an image DTO."""
         pass
+
+    def get_dto_many(self, image_names: list[str]) -> dict[str, ImageDTO]:
+        """Gets image DTOs for the given image names as a dict mapping image_name -> ImageDTO."""
+        dtos: dict[str, ImageDTO] = {}
+        for name in image_names:
+            try:
+                dtos[name] = self.get_dto(name)
+            except ImageRecordNotFoundException:
+                pass
+        return dtos
 
     @abstractmethod
     def get_metadata(self, image_name: str) -> Optional[MetadataField]:

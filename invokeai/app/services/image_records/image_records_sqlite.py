@@ -55,6 +55,27 @@ class SqliteImageRecordStorage(ImageRecordStorageBase):
 
         return deserialize_image_record(dict(result))
 
+    def get_records_by_names(self, image_names: list[str]) -> dict[str, ImageRecord]:
+        if not image_names:
+            return {}
+        result: dict[str, ImageRecord] = {}
+        with self._db.transaction() as cursor:
+            for start in range(0, len(image_names), self._MAX_SQL_VARIABLES):
+                chunk = image_names[start : start + self._MAX_SQL_VARIABLES]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor.execute(
+                    f"""--sql
+                    SELECT {IMAGE_DTO_COLS} FROM images
+                    WHERE image_name IN ({placeholders});
+                    """,
+                    chunk,
+                )
+                rows = cast(list[sqlite3.Row], cursor.fetchall())
+                for row in rows:
+                    rec = deserialize_image_record(dict(row))
+                    result[rec.image_name] = rec
+        return result
+
     def get_user_id(self, image_name: str) -> Optional[str]:
         with self._db.transaction() as cursor:
             cursor.execute(

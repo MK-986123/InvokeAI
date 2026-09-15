@@ -55,6 +55,14 @@ class BoardImageRecordStorageBase(ABC):
         pass
 
     @abstractmethod
+    def get_boards_for_images(
+        self,
+        image_names: list[str],
+    ) -> dict[str, str]:
+        """Gets a mapping of image_name -> board_id for the given image names."""
+        pass
+
+    @abstractmethod
     def get_image_count_for_board(
         self,
         board_id: str,
