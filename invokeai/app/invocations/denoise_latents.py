@@ -1,1 +1,1 @@
-PLACEHOLDER_LOAD_FROM_FILE
+@/workspace/pr69_edit/denoise_only.txt
