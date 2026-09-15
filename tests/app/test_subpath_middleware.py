@@ -96,3 +96,57 @@ def test_socketio_handshake_works_both_styles(preserve: bool, monkeypatch: pytes
     # engine.io's open packet is a `0` followed by a JSON blob carrying the session id.
     assert resp.text.startswith("0{")
     assert '"sid"' in resp.text
+
+
+def test_socketio_cors_empty_allow_origins_maps_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    from invokeai.app.api import sockets as sockets_module
+    from invokeai.app.services.config.config_default import InvokeAIAppConfig
+
+    captured_kwargs: dict[str, object] = {}
+
+    class _AsyncServerStub:
+        def __init__(self, **kwargs: object) -> None:
+            captured_kwargs.update(kwargs)
+
+        def on(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class _ASGIAppStub:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(sockets_module, "get_config", lambda: InvokeAIAppConfig(allow_origins=[]))
+    monkeypatch.setattr(sockets_module, "AsyncServer", _AsyncServerStub)
+    monkeypatch.setattr(sockets_module, "ASGIApp", _ASGIAppStub)
+
+    sockets_module.SocketIO(FastAPI())
+
+    assert captured_kwargs["cors_allowed_origins"] is None
+
+
+def test_socketio_cors_uses_configured_origins_and_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    from invokeai.app.api import sockets as sockets_module
+    from invokeai.app.services.config.config_default import InvokeAIAppConfig
+
+    config = InvokeAIAppConfig(allow_origins=["https://app.example", "http://localhost:3000"], allow_credentials=False)
+    captured_kwargs: dict[str, object] = {}
+
+    class _AsyncServerStub:
+        def __init__(self, **kwargs: object) -> None:
+            captured_kwargs.update(kwargs)
+
+        def on(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class _ASGIAppStub:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(sockets_module, "get_config", lambda: config)
+    monkeypatch.setattr(sockets_module, "AsyncServer", _AsyncServerStub)
+    monkeypatch.setattr(sockets_module, "ASGIApp", _ASGIAppStub)
+
+    sockets_module.SocketIO(FastAPI())
+
+    assert captured_kwargs["cors_allowed_origins"] == config.allow_origins
+    assert captured_kwargs["cors_credentials"] is config.allow_credentials
