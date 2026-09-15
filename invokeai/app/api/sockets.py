@@ -184,14 +184,23 @@ class SocketIO:
     _unsub_bulk_download = "unsubscribe_bulk_download"
 
     def __init__(self, app: FastAPI):
-        self._sio = AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+        config = get_config()
+        # Empty allow_origins must map to None: python-engineio treats [] as "disable CORS
+        # handling" (no Origin validation), which is unsafe for the default desktop install.
+        # None keeps engineio's same-host-only default (scheme://HTTP_HOST).
+        cors_allowed_origins = config.allow_origins or None
+        self._sio = AsyncServer(
+            async_mode="asgi",
+            cors_allowed_origins=cors_allowed_origins,
+            cors_credentials=config.allow_credentials,
+        )
         # When deployed behind a reverse proxy under a sub-path, `base_url` is set and the
         # SubPathASGIMiddleware advertises it via `root_path`. Starlette then hands mounted
         # sub-apps the full public path (e.g. `/invoke/ws/socket.io`). Unlike routers and
         # StaticFiles, engine.io is not root_path-aware: it matches the raw `scope["path"]`
         # against `socketio_path`, so the path must include the sub-path prefix or every
         # handshake 404s. The frontend already targets `{basePath}/ws/socket.io`.
-        base_url = get_config().base_url or ""
+        base_url = config.base_url or ""
         self._app = ASGIApp(socketio_server=self._sio, socketio_path=f"{base_url}/ws/socket.io")
         app.mount("/ws", DisconnectTolerantASGIApp(self._app))
 
