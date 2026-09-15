@@ -168,6 +168,30 @@ class SqliteBoardImageRecordStorage(BoardImageRecordStorageBase):
             return None
         return cast(str, result[0])
 
+    def get_boards_for_images(
+        self,
+        image_names: list[str],
+    ) -> dict[str, str]:
+        if not image_names:
+            return {}
+        result: dict[str, str] = {}
+        max_vars = 500
+        with self._db.transaction() as cursor:
+            for start in range(0, len(image_names), max_vars):
+                chunk = image_names[start : start + max_vars]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor.execute(
+                    f"""--sql
+                    SELECT image_name, board_id
+                    FROM board_images
+                    WHERE image_name IN ({placeholders});
+                    """,
+                    chunk,
+                )
+                for row in cursor.fetchall():
+                    result[cast(str, row[0])] = cast(str, row[1])
+        return result
+
     def get_image_count_for_board(self, board_id: str) -> int:
         with self._db.transaction() as cursor:
             # Convert the enum values to unique list of strings

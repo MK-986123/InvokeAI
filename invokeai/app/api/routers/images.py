@@ -554,10 +554,14 @@ def delete_images_from_list(
         deleted_images: set[str] = set()
         failed_images: set[str] = set()
         affected_boards: set[str] = set()
+        unique_names = list(dict.fromkeys(image_names))
+
+        dtos_by_name = ApiDependencies.invoker.services.images.get_dto_many(unique_names)
+
         # Dedup while preserving order: a name repeated in the request would otherwise
         # be processed twice, and the second pass's not-found error would land the same
         # name in both deleted_images and failed_images.
-        for image_name in dict.fromkeys(image_names):
+        for image_name in unique_names:
             # Bound only once the record has been read, which is what separates the two ways
             # this loop can raise ImageRecordNotFoundException. Still None means the read itself
             # failed, so nothing here ever established that the record existed — for an admin
@@ -566,9 +570,11 @@ def delete_images_from_list(
             # only the delete lost the race.
             board_id: str | None = None
             try:
-                _assert_image_owner(image_name, current_user)
-                image_dto = ApiDependencies.invoker.services.images.get_dto(image_name)
-                board_id = image_dto.board_id or "none"
+                dto = dtos_by_name.get(image_name)
+                _assert_image_owner(image_name, current_user, image_dto=dto)
+                if dto is None:
+                    raise ImageRecordNotFoundException
+                board_id = dto.board_id or "none"
                 ApiDependencies.invoker.services.images.delete(image_name)
                 deleted_images.add(image_name)
                 affected_boards.add(board_id)
@@ -914,14 +920,16 @@ def get_images_by_names(
 
     try:
         image_service = ApiDependencies.invoker.services.images
+        dtos_by_name = image_service.get_dto_many(image_names)
 
         # Fetch DTOs preserving the order of requested names
         image_dtos: list[ImageDTO] = []
         for name in image_names:
             try:
-                _assert_image_read_access(name, current_user)
-                dto = image_service.get_dto(name)
-                image_dtos.append(dto)
+                dto = dtos_by_name.get(name)
+                _assert_image_read_access(name, current_user, image_dto=dto)
+                if dto is not None:
+                    image_dtos.append(dto)
             except HTTPException:
                 # Skip images the user is not authorized to view
                 continue

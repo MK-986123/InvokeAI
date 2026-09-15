@@ -4,6 +4,8 @@ These helpers are imported by multiple router modules. Keep them free of router
 specifics so any route can call them after resolving `current_user`.
 """
 
+from typing import Optional
+
 from fastapi import HTTPException
 
 from invokeai.app.api.auth_dependencies import CurrentUserOrDefault
@@ -12,9 +14,14 @@ from invokeai.app.services.board_records.board_records_common import (
     BoardRecordNotFoundException,
     BoardVisibility,
 )
+from invokeai.app.services.images.images_common import ImageDTO
 
 
-def assert_image_owner(image_name: str, current_user: CurrentUserOrDefault) -> None:
+def assert_image_owner(
+    image_name: str,
+    current_user: CurrentUserOrDefault,
+    image_dto: Optional[ImageDTO] = None,
+) -> None:
     """Raise 403 if the current user does not own the image and is not an admin.
 
     Ownership is satisfied when ANY of these hold:
@@ -25,11 +32,20 @@ def assert_image_owner(image_name: str, current_user: CurrentUserOrDefault) -> N
     """
     if current_user.is_admin:
         return
-    owner = ApiDependencies.invoker.services.image_records.get_user_id(image_name)
+
+    if image_dto is not None:
+        owner = image_dto.user_id
+    else:
+        owner = ApiDependencies.invoker.services.image_records.get_user_id(image_name)
+
     if owner is not None and owner == current_user.user_id:
         return
 
-    board_id = ApiDependencies.invoker.services.board_image_records.get_board_for_image(image_name)
+    if image_dto is not None:
+        board_id = image_dto.board_id
+    else:
+        board_id = ApiDependencies.invoker.services.board_image_records.get_board_for_image(image_name)
+
     if board_id is not None:
         # The board *record*, not its DTO: the decision needs only the owner and the
         # visibility, and the DTO would drag in cover-image resolution plus three COUNT
@@ -81,7 +97,11 @@ def _assert_image_record_exists(image_name: str) -> None:
         raise HTTPException(status_code=404, detail="Image not found")
 
 
-def assert_image_read_access(image_name: str, current_user: CurrentUserOrDefault) -> None:
+def assert_image_read_access(
+    image_name: str,
+    current_user: CurrentUserOrDefault,
+    image_dto: Optional[ImageDTO] = None,
+) -> None:
     """Raise 403 if the current user may not view the image.
 
     Access is granted when ANY of these hold:
@@ -92,11 +112,19 @@ def assert_image_read_access(image_name: str, current_user: CurrentUserOrDefault
     if current_user.is_admin:
         return
 
-    owner = ApiDependencies.invoker.services.image_records.get_user_id(image_name)
+    if image_dto is not None:
+        owner = image_dto.user_id
+    else:
+        owner = ApiDependencies.invoker.services.image_records.get_user_id(image_name)
+
     if owner is not None and owner == current_user.user_id:
         return
 
-    board_id = ApiDependencies.invoker.services.board_image_records.get_board_for_image(image_name)
+    if image_dto is not None:
+        board_id = image_dto.board_id
+    else:
+        board_id = ApiDependencies.invoker.services.board_image_records.get_board_for_image(image_name)
+
     if board_id is not None:
         # See `assert_image_owner` for why this reads the board record and catches only
         # not-found: a lookup that cannot be decided must not present as a permission decision.

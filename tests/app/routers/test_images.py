@@ -409,6 +409,18 @@ def prepare_image_batch_test(monkeypatch: Any, mock_invoker: Invoker) -> MagicMo
     Returns the mock service so tests can script per-name update outcomes.
     """
     images_service = MagicMock()
+
+    def mock_get_dto_many(image_names: list[str]) -> dict[str, Any]:
+        dtos = {}
+        for name in image_names:
+            try:
+                dtos[name] = images_service.get_dto(name)
+            except ImageRecordNotFoundException:
+                pass
+        return dtos
+
+    images_service.get_dto_many.side_effect = mock_get_dto_many
+
     monkeypatch.setattr(mock_invoker.services, "images", images_service)
     mock_invoker.services.image_moves = MagicMock()
     mock_invoker.services.image_moves.is_maintenance_active.return_value = False

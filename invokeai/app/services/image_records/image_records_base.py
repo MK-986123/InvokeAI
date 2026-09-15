@@ -26,6 +26,11 @@ class ImageRecordStorageBase(ABC):
         pass
 
     @abstractmethod
+    def get_records_by_names(self, image_names: list[str]) -> dict[str, ImageRecord]:
+        """Gets a mapping of image_name -> ImageRecord for the given image names."""
+        pass
+
+    @abstractmethod
     def exists(self, image_name: str) -> bool:
         """Reports whether the image row is present, without reading it.
 

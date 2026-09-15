@@ -69,7 +69,8 @@ class BulkDownloadService(BulkDownloadBase):
             raise e
 
     def _image_handler(self, image_names: list[str]) -> list[ImageDTO]:
-        return [self._invoker.services.images.get_dto(image_name) for image_name in image_names]
+        dtos_map = self._invoker.services.images.get_dto_many(image_names)
+        return [dtos_map[name] for name in image_names if name in dtos_map]
 
     def _board_handler(self, board_id: str) -> list[ImageDTO]:
         image_names = self._invoker.services.board_image_records.get_all_board_image_names_for_board(
